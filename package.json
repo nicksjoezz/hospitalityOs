@@ -1,0 +1,24 @@
+{
+  "name": "hospitalityos",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AI-powered hotel operating system (modular monolith).",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:api": "npm run start:dev --workspace @hospitalityos/api",
+    "dev:web": "npm run dev --workspace @hospitalityos/web",
+    "build": "npm run db:generate && npm run build --workspaces --if-present",
+    "db:migrate": "npm run db:migrate --workspace @hospitalityos/api",
+    "db:seed": "npm run db:seed --workspace @hospitalityos/api",
+    "db:generate": "npm run db:generate --workspace @hospitalityos/api",
+    "test": "npm run test --workspaces --if-present",
+    "infra:up": "docker compose up --detach postgres redis",
+    "infra:down": "docker compose down"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,57 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: hos_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hospitalityos
+      POSTGRES_PASSWORD: hospitalityos
+      POSTGRES_DB: hospitalityos
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hospitalityos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: hos_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: hos_api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://hospitalityos:hospitalityos@postgres:5432/hospitalityos?schema=public
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3000:3000"
+    profiles:
+      - full
+
+volumes:
+  pgdata:
+  redisdata:
