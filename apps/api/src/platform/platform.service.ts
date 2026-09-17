@@ -2,15 +2,18 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Prisma, Role } from '@prisma/client';
+import { PlanInterval, Prisma, Role } from '@prisma/client';
 import { randomBytes } from 'node:crypto';
 import * as argon2 from 'argon2';
 import {
   ActorType,
   ALL_FEATURES,
+  CORE_FEATURES,
   ApproveHotelDto,
   ExtendTrialDto,
   Feature,
@@ -55,7 +58,7 @@ const HOTEL_SELECT = {
 } satisfies Prisma.HotelSelect;
 
 @Injectable()
-export class PlatformService {
+export class PlatformService implements OnModuleInit {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService<AppConfig, true>,
@@ -64,6 +67,132 @@ export class PlatformService {
     private readonly settings: PlatformSettingsService,
     private readonly billing: PlatformBillingService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    const logger = new Logger('PlatformBootstrap');
+    try {
+      await this.settings.get();
+
+      const planCount = await this.prisma.plan.count();
+      if (planCount === 0) {
+        logger.log('Seeding default subscription plans (trial, starter, pro, enterprise)...');
+        const defaultPlans = [
+          {
+            code: 'trial',
+            name: 'Free Trial',
+            description: 'Explore the platform free. Go-live features unlock on approval.',
+            priceMinor: 0,
+            interval: PlanInterval.MONTHLY,
+            sortOrder: 0,
+            features: [
+              ...CORE_FEATURES,
+              Feature.RESTAURANT_POS,
+              Feature.BAR_POS,
+              Feature.INVENTORY,
+              Feature.RATE_MANAGEMENT,
+              Feature.ANALYTICS,
+              Feature.AI_ASSISTANT,
+            ],
+          },
+          {
+            code: 'starter',
+            name: 'Starter',
+            description: 'Independent properties: front desk, F&B, stock and invoicing.',
+            priceMinor: 4900,
+            interval: PlanInterval.MONTHLY,
+            sortOrder: 1,
+            maxRooms: 20,
+            maxUsers: 15,
+            features: [
+              ...CORE_FEATURES,
+              Feature.RESTAURANT_POS,
+              Feature.BAR_POS,
+              Feature.INVENTORY,
+              Feature.BILLING_INVOICES,
+              Feature.ANALYTICS,
+            ],
+          },
+          {
+            code: 'pro',
+            name: 'Professional',
+            description: 'Growing hotels: distribution, online payments, AI and loyalty.',
+            priceMinor: 14900,
+            interval: PlanInterval.MONTHLY,
+            sortOrder: 2,
+            maxRooms: 100,
+            maxUsers: 60,
+            features: [
+              ...CORE_FEATURES,
+              Feature.RESTAURANT_POS,
+              Feature.BAR_POS,
+              Feature.INVENTORY,
+              Feature.PROCUREMENT,
+              Feature.BILLING_INVOICES,
+              Feature.RATE_MANAGEMENT,
+              Feature.CHANNEL_MANAGER,
+              Feature.ONLINE_PAYMENTS,
+              Feature.AI_ASSISTANT,
+              Feature.ANALYTICS,
+              Feature.MARKETING,
+              Feature.LOYALTY,
+              Feature.GUEST_PORTAL,
+              Feature.REVIEWS,
+            ],
+          },
+          {
+            code: 'enterprise',
+            name: 'Enterprise',
+            description: 'Everything, unlimited — full AI revenue management and reporting.',
+            priceMinor: 39900,
+            interval: PlanInterval.MONTHLY,
+            sortOrder: 3,
+            maxRooms: null as number | null,
+            maxUsers: null as number | null,
+            features: ALL_FEATURES,
+          },
+        ];
+
+        for (const p of defaultPlans) {
+          await this.prisma.plan.create({
+            data: {
+              code: p.code,
+              name: p.name,
+              description: p.description,
+              priceMinor: p.priceMinor,
+              currency: 'USD',
+              interval: p.interval,
+              features: p.features,
+              maxRooms: p.maxRooms ?? null,
+              maxUsers: p.maxUsers ?? null,
+              isPublic: true,
+              active: true,
+              sortOrder: p.sortOrder,
+            },
+          });
+        }
+        logger.log('Default subscription plans seeded.');
+      }
+
+      const adminCount = await this.prisma.platformAdmin.count();
+      if (adminCount === 0) {
+        const email = (this.config.get('PLATFORM_ADMIN_EMAIL', { infer: true }) || 'admin@hospitalityos.local').toLowerCase();
+        const password = this.config.get('PLATFORM_ADMIN_PASSWORD', { infer: true }) || 'ChangeMe_Master_2026!';
+        const name = this.config.get('PLATFORM_ADMIN_NAME', { infer: true }) || 'Master Administrator';
+        const passwordHash = await argon2.hash(password);
+        await this.prisma.platformAdmin.create({
+          data: {
+            email,
+            passwordHash,
+            name,
+            role: PlatformRole.SUPER_ADMIN,
+          },
+        });
+        logger.log(`Master administrator seeded: ${email}`);
+      }
+    } catch (err) {
+      logger.warn(`Platform seed check note: ${err}`);
+    }
+  }
 
   // ---------------------------------------------------------------- Registration
   /** Public self-registration → TRIAL hotel + OWNER login, auto-signed-in. */
