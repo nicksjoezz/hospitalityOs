@@ -149,6 +149,7 @@ export class AuthService {
       select: {
         name: true,
         slug: true,
+        currency: true,
         status: true,
         approved: true,
         approvalRequested: true,
@@ -161,6 +162,7 @@ export class AuthService {
     return {
       name: hotel.name,
       slug: hotel.slug,
+      currency: hotel.currency,
       status: hotel.status,
       approved: hotel.approved,
       approvalRequested: hotel.approvalRequested,
