@@ -23,7 +23,8 @@ interface AttendanceRecord {
 export function Staff() {
   const { user } = useAuth();
   const qc = useQueryClient();
-  const isManager = user?.role === 'OWNER' || user?.role === 'MANAGER';
+  const isOwner = user?.role === 'OWNER';
+  const isManager = isOwner || user?.role === 'MANAGER';
   const users = useQuery({ queryKey: ['staff-users'], queryFn: () => apiGet<User[]>('/staff/users'), enabled: isManager });
   const shifts = useQuery({ queryKey: ['shifts'], queryFn: () => apiGet<Shift[]>('/staff/shifts') });
   const leave = useQuery({ queryKey: ['leave'], queryFn: () => apiGet<Leave[]>('/staff/leave') });
@@ -75,8 +76,8 @@ export function Staff() {
     try {
       await apiWrite('POST', '/staff/leave', {
         type: leaveForm.type,
-        startDate: new Date(leaveForm.startDate),
-        endDate: new Date(leaveForm.endDate),
+        startDate: leaveForm.startDate,
+        endDate: leaveForm.endDate,
         reason: leaveForm.reason || undefined,
       });
       setLeaveMsg('✅ Leave application submitted. Your manager has been notified.');
@@ -165,26 +166,32 @@ export function Staff() {
   return (
     <div className="space-y-6">
       <PageTitle
-        title={isManager ? 'Staff Operations & Shifts' : 'My Staff Hub & Timesheet'}
+        title={isOwner ? 'Staff Operations & Shifts' : isManager ? 'Staff Operations & Shifts' : 'My Staff Hub & Timesheet'}
         action={
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={clocking}
-              onClick={() => clock('clock-in')}
-            >
-              📍 {clocking ? 'Verifying GPS…' : 'Clock In (GPS)'}
-            </Button>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={clocking}
-              onClick={() => clock('clock-out')}
-            >
-              Clock Out
-            </Button>
-          </div>
+          !isOwner ? (
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={clocking}
+                onClick={() => clock('clock-in')}
+              >
+                📍 {clocking ? 'Verifying GPS…' : 'Clock In (GPS)'}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={clocking}
+                onClick={() => clock('clock-out')}
+              >
+                Clock Out
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <Badge tone="amber">👑 Hotel Owner</Badge>
+            </div>
+          )
         }
       />
 
@@ -222,91 +229,93 @@ export function Staff() {
         </Card>
       )}
 
-      {/* Staff Self-Service: Apply for Leave Card */}
-      <Card className="border-brand/20 bg-slate-50/40">
-        <div className="mb-3 flex items-center justify-between">
-          <div>
-            <h3 className="text-sm font-semibold text-slate-800">
-              🌴 Request Time Off / Leave
-            </h3>
-            <p className="text-xs text-slate-500">
-              Submit your leave application for manager approval. You will receive an alert once reviewed.
-            </p>
-          </div>
-          <Badge tone="sky">Staff Self-Service</Badge>
-        </div>
-
-        <form onSubmit={applyLeave} className="space-y-3">
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+      {/* Staff Self-Service: Apply for Leave Card (Hidden for Owner) */}
+      {!isOwner && (
+        <Card className="border-brand/20 bg-slate-50/40">
+          <div className="mb-3 flex items-center justify-between">
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600">
-                Leave Category
-              </label>
-              <Select
-                value={leaveForm.type}
-                onChange={(e) => setLeaveForm({ ...leaveForm, type: e.target.value })}
-                className="w-full"
-              >
-                <option value="ANNUAL">🌴 Annual Vacation</option>
-                <option value="SICK">🏥 Medical / Sick Leave</option>
-                <option value="CASUAL">⚡ Casual / Personal Leave</option>
-                <option value="EMERGENCY">🚨 Family / Emergency</option>
-                <option value="MATERNITY">👶 Maternity / Paternity</option>
-                <option value="UNPAID">🗓️ Unpaid Leave</option>
-              </Select>
+              <h3 className="text-sm font-semibold text-slate-800">
+                🌴 Request Time Off / Leave
+              </h3>
+              <p className="text-xs text-slate-500">
+                Submit your leave application for approval. You will receive an alert once reviewed.
+              </p>
+            </div>
+            <Badge tone="sky">Staff Self-Service</Badge>
+          </div>
+
+          <form onSubmit={applyLeave} className="space-y-3">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">
+                  Leave Category
+                </label>
+                <Select
+                  value={leaveForm.type}
+                  onChange={(e) => setLeaveForm({ ...leaveForm, type: e.target.value })}
+                  className="w-full"
+                >
+                  <option value="ANNUAL">🌴 Annual Vacation</option>
+                  <option value="SICK">🏥 Medical / Sick Leave</option>
+                  <option value="CASUAL">⚡ Casual / Personal Leave</option>
+                  <option value="EMERGENCY">🚨 Family / Emergency</option>
+                  <option value="MATERNITY">👶 Maternity / Paternity</option>
+                  <option value="UNPAID">🗓️ Unpaid Leave</option>
+                </Select>
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">
+                  Start Date
+                </label>
+                <Input
+                  type="date"
+                  value={leaveForm.startDate}
+                  onChange={(e) => setLeaveForm({ ...leaveForm, startDate: e.target.value })}
+                  className="w-full"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-medium text-slate-600">
+                  End Date (Inclusive)
+                </label>
+                <Input
+                  type="date"
+                  value={leaveForm.endDate}
+                  onChange={(e) => setLeaveForm({ ...leaveForm, endDate: e.target.value })}
+                  className="w-full"
+                  required
+                />
+              </div>
             </div>
 
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600">
-                Start Date
+                Reason / Shift Handover Arrangement
               </label>
               <Input
-                type="date"
-                value={leaveForm.startDate}
-                onChange={(e) => setLeaveForm({ ...leaveForm, startDate: e.target.value })}
+                placeholder="e.g. Attending family wedding / Scheduled doctor appointment. Shift covered by Emeka."
+                value={leaveForm.reason}
+                onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
                 className="w-full"
-                required
               />
             </div>
 
-            <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600">
-                End Date (Inclusive)
-              </label>
-              <Input
-                type="date"
-                value={leaveForm.endDate}
-                onChange={(e) => setLeaveForm({ ...leaveForm, endDate: e.target.value })}
-                className="w-full"
-                required
-              />
+            <div className="flex items-center justify-between">
+              {leaveMsg && (
+                <p className="text-xs font-medium text-slate-700">{leaveMsg}</p>
+              )}
+              <div className="ml-auto">
+                <Button type="submit" disabled={submittingLeave}>
+                  {submittingLeave ? 'Submitting…' : 'Submit Leave Request'}
+                </Button>
+              </div>
             </div>
-          </div>
-
-          <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">
-              Reason / Shift Handover Arrangement
-            </label>
-            <Input
-              placeholder="e.g. Attending family wedding / Scheduled doctor appointment. Shift covered by Emeka."
-              value={leaveForm.reason}
-              onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
-              className="w-full"
-            />
-          </div>
-
-          <div className="flex items-center justify-between">
-            {leaveMsg && (
-              <p className="text-xs font-medium text-slate-700">{leaveMsg}</p>
-            )}
-            <div className="ml-auto">
-              <Button type="submit" disabled={submittingLeave}>
-                {submittingLeave ? 'Submitting…' : 'Submit Leave Request'}
-              </Button>
-            </div>
-          </div>
-        </form>
-      </Card>
+          </form>
+        </Card>
+      )}
 
       {isManager && (
         <Card>

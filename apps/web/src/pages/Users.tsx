@@ -29,7 +29,9 @@ const ROLES = [
 
 export function Users() {
   const qc = useQueryClient();
-  const { hotel } = useAuth();
+  const { hotel, user } = useAuth();
+  const isOwner = user?.role === 'OWNER';
+  const assignableRoles = isOwner ? ROLES : ROLES.filter((r) => r !== 'OWNER');
   const staffLink = hotel?.slug ? `${window.location.origin}/h/${hotel.slug}` : null;
   const users = useQuery({ queryKey: ['users'], queryFn: () => apiGet<User[]>('/users') });
   const [form, setForm] = useState({
@@ -166,7 +168,7 @@ export function Users() {
           <div>
             <label className="text-xs font-semibold text-slate-600 block mb-1">Assigned Department / Role *</label>
             <Select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })}>
-              {ROLES.map((r) => (
+              {assignableRoles.map((r) => (
                 <option key={r} value={r}>{r.replace('_', ' ')}</option>
               ))}
             </Select>
@@ -212,55 +214,69 @@ export function Users() {
       {users.isLoading ? (
         <Empty>Loading staff accounts…</Empty>
       ) : (
-        <Table headers={['Staff Member', 'Login Phone', 'Department', 'Hourly Wage Rate', 'Status', 'Actions']}>
-          {users.data?.map((u) => (
-            <tr key={u.id}>
-              <Td>
-                <div className="font-semibold text-slate-900">{u.name}</div>
-                {u.email && <div className="text-xs text-slate-400">{u.email}</div>}
-              </Td>
-              <Td className="font-mono text-xs text-slate-700">{u.phone}</Td>
-              <Td>
-                <Select value={u.role} onChange={(e) => changeRole(u.id, e.target.value)}>
-                  {ROLES.map((r) => (
-                    <option key={r} value={r}>{r.replace('_', ' ')}</option>
-                  ))}
-                </Select>
-              </Td>
-              <Td>
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold text-slate-800 text-xs">
-                    {u.hourlyRate ? `${money(u.hourlyRate)}/hr` : <span className="text-slate-400">Not set</span>}
-                  </span>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => {
-                      setEditingRateUser(u);
-                      setNewRateMajor(u.hourlyRate ? (u.hourlyRate / 100).toString() : '');
-                    }}
-                  >
-                    Set Rate
-                  </Button>
-                </div>
-              </Td>
-              <Td>
-                <Badge tone={u.active ? 'green' : 'slate'}>{u.active ? 'Active' : 'Inactive'}</Badge>
-              </Td>
-              <Td>
-                <div className="flex items-center gap-1.5">
-                  <Button size="sm" variant="secondary" onClick={() => reset(u.id)}>
-                    Reset PW
-                  </Button>
-                  {u.active && (
-                    <Button size="sm" variant="danger" onClick={() => deactivate(u.id)}>
-                      Deactivate
-                    </Button>
+        <Table headers={['Name', 'Phone', 'Role', 'Hourly Rate', 'Status', 'Actions']}>
+          {users.data
+            ?.slice()
+            .sort((a, b) => (a.role === 'OWNER' ? -1 : b.role === 'OWNER' ? 1 : 0))
+            .map((u) => (
+              <tr key={u.id} className={u.role === 'OWNER' ? 'bg-amber-50/20' : undefined}>
+                <Td>
+                  <div className="font-semibold text-slate-900 flex items-center gap-1.5">
+                    {u.name}
+                    {u.role === 'OWNER' && <span className="text-xs">👑</span>}
+                  </div>
+                  {u.email && <div className="text-xs text-slate-400">{u.email}</div>}
+                </Td>
+                <Td className="font-mono text-xs text-slate-700">{u.phone}</Td>
+                <Td>
+                  {u.role === 'OWNER' && !isOwner ? (
+                    <Badge tone="amber">OWNER</Badge>
+                  ) : (
+                    <Select value={u.role} onChange={(e) => changeRole(u.id, e.target.value)}>
+                      {assignableRoles.map((r) => (
+                        <option key={r} value={r}>{r.replace('_', ' ')}</option>
+                      ))}
+                    </Select>
                   )}
-                </div>
-              </Td>
-            </tr>
-          ))}
+                </Td>
+                <Td>
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-slate-800 text-xs">
+                      {u.hourlyRate ? `${money(u.hourlyRate)}/hr` : <span className="text-slate-400">Not set</span>}
+                    </span>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        setEditingRateUser(u);
+                        setNewRateMajor(u.hourlyRate ? (u.hourlyRate / 100).toString() : '');
+                      }}
+                    >
+                      Set Rate
+                    </Button>
+                  </div>
+                </Td>
+                <Td>
+                  <Badge tone={u.active ? 'green' : 'slate'}>{u.active ? 'Active' : 'Inactive'}</Badge>
+                </Td>
+                <Td>
+                  {u.role === 'OWNER' && !isOwner ? (
+                    <span className="text-xs text-slate-400 italic font-medium">Protected Owner</span>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <Button size="sm" variant="secondary" onClick={() => reset(u.id)}>
+                        Reset PW
+                      </Button>
+                      {u.active && (
+                        <Button size="sm" variant="danger" onClick={() => deactivate(u.id)}>
+                          Deactivate
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </Td>
+              </tr>
+            ))}
           {users.data?.length === 0 && (
             <tr>
               <Td colSpan={6} className="text-center py-6 text-slate-400 text-xs">
