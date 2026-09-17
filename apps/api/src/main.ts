@@ -1,4 +1,4 @@
-import 'reflect-metadata';
+import { execSync } from 'node:child_process';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import helmet from 'helmet';
@@ -12,6 +12,15 @@ function corsOrigin(raw: string): boolean | string[] {
 }
 
 async function bootstrap(): Promise<void> {
+  const logger = new Logger('Bootstrap');
+  try {
+    logger.log('Checking and applying database migrations...');
+    execSync('npx prisma migrate deploy', { stdio: 'inherit' });
+    logger.log('Database migrations verified successfully.');
+  } catch (e) {
+    logger.warn(`Automatic migration note: ${e}`);
+  }
+
   const app = await NestFactory.create(AppModule, {
     bufferLogs: false,
     // Capture the raw request body so we can verify WhatsApp webhook signatures.
