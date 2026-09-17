@@ -34,6 +34,7 @@ export function Button({
   disabled,
   type = 'button',
   size = 'md',
+  className = '',
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -41,6 +42,7 @@ export function Button({
   disabled?: boolean;
   type?: 'button' | 'submit';
   size?: 'sm' | 'md';
+  className?: string;
 }) {
   const colors = {
     primary: 'bg-brand text-white hover:bg-slate-800',
@@ -54,7 +56,7 @@ export function Button({
       type={type}
       onClick={onClick}
       disabled={disabled}
-      className={`rounded-md font-medium disabled:opacity-40 ${colors} ${sizing}`}
+      className={`rounded-md font-medium disabled:opacity-40 ${colors} ${sizing} ${className}`}
     >
       {children}
     </button>
@@ -98,8 +100,20 @@ export function Table({ headers, children }: { headers: string[]; children: Reac
   );
 }
 
-export function Td({ children }: { children: ReactNode }) {
-  return <td className="px-3 py-2 align-top">{children}</td>;
+export function Td({
+  children,
+  className = '',
+  colSpan,
+}: {
+  children: ReactNode;
+  className?: string;
+  colSpan?: number;
+}) {
+  return (
+    <td colSpan={colSpan} className={`px-3 py-2 align-top ${className}`}>
+      {children}
+    </td>
+  );
 }
 
 export function Badge({ children, tone = 'slate' }: { children: ReactNode; tone?: string }) {

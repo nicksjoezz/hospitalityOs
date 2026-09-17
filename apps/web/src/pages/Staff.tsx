@@ -115,10 +115,14 @@ export function Staff() {
               lat: pos.coords.latitude,
               lng: pos.coords.longitude,
             });
-            if (res.data?.flagged) {
-              setClockStatus(`⚠️ Clocked in, but flagged: ${res.data.flagReason}`);
+            if (!res.queued && res.data) {
+              if (res.data.flagged) {
+                setClockStatus(`⚠️ Clocked in, but flagged: ${res.data.flagReason}`);
+              } else {
+                setClockStatus(`✅ Clocked in successfully. GPS distance: ${res.data.distanceMeters ?? 0}m.`);
+              }
             } else {
-              setClockStatus(`✅ Clocked in successfully. GPS distance: ${res.data?.distanceMeters ?? 0}m.`);
+              setClockStatus('📡 Clock-in queued (offline mode).');
             }
             await qc.invalidateQueries({ queryKey: ['attendance'] });
           } catch (err) {

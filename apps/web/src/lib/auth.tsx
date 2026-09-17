@@ -21,6 +21,7 @@ export interface AuthUser {
 export interface HotelContext {
   name: string;
   slug: string | null;
+  currency?: string;
   status: 'TRIAL' | 'ACTIVE' | 'SUSPENDED' | 'CANCELLED';
   approved: boolean;
   approvalRequested: boolean;
