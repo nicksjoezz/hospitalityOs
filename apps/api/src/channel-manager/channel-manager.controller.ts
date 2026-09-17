@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Header,
   Headers,
   Param,
   Post,
@@ -56,6 +57,32 @@ export class ChannelManagerController {
   @Post('connections/:id/push')
   push(@CurrentActor() actor: Actor, @Param('id') id: string) {
     return this.channels.pushInventory(actor, id);
+  }
+
+  /**
+   * Export an RFC 5545 iCalendar feed for a room type.
+   * Airbnb and Booking.com import this URL to synchronize availability and block dates.
+   */
+  @Public()
+  @Get('ical/export/:roomTypeId')
+  @Header('Content-Type', 'text/calendar; charset=utf-8')
+  @Header('Content-Disposition', 'inline; filename="calendar.ics"')
+  exportIcal(@Param('roomTypeId') roomTypeId: string): Promise<string> {
+    const cleanId = roomTypeId.replace('.ics', '');
+    return this.channels.exportIcal(cleanId);
+  }
+
+  /**
+   * Import / Sync an external iCal link (e.g. from Airbnb or Booking.com)
+   * to automatically block booked dates and prevent double-booking.
+   */
+  @Roles(Role.OWNER, Role.MANAGER)
+  @Post('ical/sync')
+  syncIcal(
+    @CurrentActor() actor: Actor,
+    @Body() body: { roomTypeId: string; icalUrl: string; channelName?: string },
+  ) {
+    return this.channels.syncExternalIcal(actor, body);
   }
 
   /**

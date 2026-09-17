@@ -1,9 +1,10 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import {
   ActorType,
   BLOCKING_RESERVATION_STATUSES,
   ChannelType,
   ReservationSource,
+  ReservationStatus,
 } from '@hospitalityos/shared';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../common/audit.service';
@@ -114,5 +115,133 @@ export class ChannelManagerService {
     });
     this.logger.log(`Ingested ${channel} reservation ${payload.externalId} → ${reservation.id}`);
     return { reservationId: reservation.id, deduped: false };
+  }
+
+  /** Export an RFC 5545 iCalendar feed for a room type. */
+  async exportIcal(roomTypeId: string): Promise<string> {
+    const rt = await this.prisma.roomType.findUnique({ where: { id: roomTypeId } });
+    if (!rt) throw new NotFoundException('Room type not found');
+
+    const reservations = await this.prisma.reservation.findMany({
+      where: {
+        roomTypeId,
+        status: { in: BLOCKING_RESERVATION_STATUSES as never },
+        checkOutDate: { gte: new Date(Date.now() - 30 * DAY) },
+      },
+      select: {
+        id: true,
+        checkInDate: true,
+        checkOutDate: true,
+        source: true,
+        status: true,
+      },
+    });
+
+    const formatDt = (d: Date) => {
+      const year = d.getUTCFullYear();
+      const month = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const day = String(d.getUTCDate()).padStart(2, '0');
+      return `${year}${month}${day}`;
+    };
+
+    const lines = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//HospitalityOS//iCal Engine//EN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      `X-WR-CALNAME:${rt.name} - HospitalityOS`,
+    ];
+
+    for (const r of reservations) {
+      lines.push('BEGIN:VEVENT');
+      lines.push(`UID:${r.id}@hospitalityos`);
+      lines.push(`DTSTAMP:${formatDt(new Date())}T000000Z`);
+      lines.push(`DTSTART;VALUE=DATE:${formatDt(r.checkInDate)}`);
+      lines.push(`DTEND;VALUE=DATE:${formatDt(r.checkOutDate)}`);
+      lines.push(`SUMMARY:Reserved (${r.source})`);
+      lines.push(`DESCRIPTION:HospitalityOS Reservation ${r.id.slice(0, 8)}`);
+      lines.push(`STATUS:${r.status === ReservationStatus.CONFIRMED ? 'CONFIRMED' : 'TENTATIVE'}`);
+      lines.push('END:VEVENT');
+    }
+
+    lines.push('END:VCALENDAR');
+    return lines.join('\r\n');
+  }
+
+  /** Import and sync remote iCal (e.g. from Airbnb or Booking.com). */
+  async syncExternalIcal(
+    actor: Actor,
+    input: { roomTypeId: string; icalUrl: string; channelName?: string },
+  ) {
+    if (!input.icalUrl.startsWith('http://') && !input.icalUrl.startsWith('https://')) {
+      throw new BadRequestException('Valid http/https iCal URL required');
+    }
+    const res = await fetch(input.icalUrl, { headers: { 'User-Agent': 'HospitalityOS-iCal/1.0' } });
+    if (!res.ok) {
+      throw new BadRequestException(`Failed to fetch remote iCal: HTTP ${res.status}`);
+    }
+    const text = await res.text();
+
+    const channel = input.channelName?.toUpperCase().includes('AIRBNB')
+      ? ChannelType.AIRBNB
+      : input.channelName?.toUpperCase().includes('BOOKING')
+      ? ChannelType.BOOKING_COM
+      : ChannelType.GENERIC;
+
+    const eventBlocks = text.split('BEGIN:VEVENT');
+    let importedCount = 0;
+
+    for (let i = 1; i < eventBlocks.length; i++) {
+      const block = eventBlocks[i].split('END:VEVENT')[0];
+      const uidMatch = block.match(/UID:(.+?)(\r|\n)/);
+      const dtStartMatch = block.match(/DTSTART(?:;[^:]+)?:(\d{8}(?:T\d{6}Z?)?)/);
+      const dtEndMatch = block.match(/DTEND(?:;[^:]+)?:(\d{8}(?:T\d{6}Z?)?)/);
+      const summaryMatch = block.match(/SUMMARY:(.+?)(\r|\n)/);
+
+      if (!dtStartMatch || !dtEndMatch) continue;
+
+      const uid = uidMatch ? uidMatch[1].trim() : `ical-${Date.now()}-${i}`;
+      const parseDateStr = (raw: string) => {
+        const y = parseInt(raw.slice(0, 4), 10);
+        const m = parseInt(raw.slice(4, 6), 10) - 1;
+        const d = parseInt(raw.slice(6, 8), 10);
+        return new Date(Date.UTC(y, m, d, 14, 0, 0));
+      };
+
+      const checkIn = parseDateStr(dtStartMatch[1]);
+      const checkOut = parseDateStr(dtEndMatch[1]);
+
+      if (checkOut <= checkIn) continue;
+
+      try {
+        await this.ingestReservation(actor.hotelId, channel, {
+          externalId: uid,
+          guestName: summaryMatch ? summaryMatch[1].trim() : `${input.channelName || 'OTA'} Guest`,
+          roomTypeId: input.roomTypeId,
+          checkIn: checkIn.toISOString().slice(0, 10),
+          checkOut: checkOut.toISOString().slice(0, 10),
+        });
+        importedCount++;
+      } catch (err: any) {
+        this.logger.warn(`Could not import iCal event ${uid}: ${err?.message}`);
+      }
+    }
+
+    await this.audit.record({
+      actor,
+      action: 'channel.ical_sync',
+      entity: 'ChannelConnection',
+      entityId: input.roomTypeId,
+      after: { channel, importedCount, url: input.icalUrl },
+    });
+
+    return {
+      ok: true,
+      channel,
+      eventsProcessed: eventBlocks.length - 1,
+      importedCount,
+      message: `Successfully synchronized ${importedCount} reservation(s) from ${input.channelName || 'iCal'}!`,
+    };
   }
 }
