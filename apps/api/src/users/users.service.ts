@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -42,6 +43,9 @@ export class UsersService {
       hourlyRate?: number;
     },
   ) {
+    if (input.role === Role.OWNER && actor.role !== Role.OWNER) {
+      throw new ForbiddenException('Only hotel owners can create or appoint owner accounts');
+    }
     const existing = await this.prisma.user.findFirst({
       where: { hotelId: actor.hotelId, phone: input.phone },
     });
@@ -123,6 +127,12 @@ export class UsersService {
     },
   ) {
     const prev = await this.ownedUser(actor, id);
+    if (prev.role === Role.OWNER && actor.role !== Role.OWNER) {
+      throw new ForbiddenException('Managers cannot modify owner accounts');
+    }
+    if (data.role === Role.OWNER && actor.role !== Role.OWNER) {
+      throw new ForbiddenException('Only owners can promote users to owner');
+    }
     const { hourlyRate, ...userData } = data;
     const user = await this.prisma.user.update({ where: { id }, data: userData, select: publicSelect });
     if (hourlyRate !== undefined) {
@@ -150,7 +160,10 @@ export class UsersService {
   }
 
   async resetPassword(actor: Actor, id: string, newPassword: string) {
-    await this.ownedUser(actor, id);
+    const target = await this.ownedUser(actor, id);
+    if (target.role === Role.OWNER && actor.role !== Role.OWNER) {
+      throw new ForbiddenException('Managers cannot reset owner passwords');
+    }
     if (newPassword.length < 6) throw new BadRequestException('Password too short');
     const passwordHash = await argon2.hash(newPassword);
     await this.prisma.$transaction([
@@ -172,6 +185,9 @@ export class UsersService {
 
   async deactivate(actor: Actor, id: string) {
     const user = await this.ownedUser(actor, id);
+    if (user.role === Role.OWNER && actor.role !== Role.OWNER) {
+      throw new ForbiddenException('Managers cannot deactivate owner accounts');
+    }
     if (user.role === Role.OWNER) {
       const owners = await this.prisma.user.count({
         where: { hotelId: actor.hotelId, role: Role.OWNER, active: true, deletedAt: null },
