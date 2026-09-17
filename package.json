@@ -8,6 +8,10 @@
     "apps/*"
   ],
   "scripts": {
+    "start": "npm run start:prod --workspace @hospitalityos/api",
+    "start:prod": "npm run start:prod --workspace @hospitalityos/api",
+    "start:api": "npm run start:prod --workspace @hospitalityos/api",
+    "start:web": "npm run preview --workspace @hospitalityos/web",
     "dev:api": "npm run start:dev --workspace @hospitalityos/api",
     "dev:web": "npm run dev --workspace @hospitalityos/web",
     "build": "npm run db:generate && npm run build --workspaces --if-present",

@@ -25,10 +25,11 @@ RUN apk add --no-cache openssl
 ENV NODE_ENV=production
 ENV SERVE_WEB=true
 ENV WEB_DIST=/repo/apps/web/dist
+COPY package.json package-lock.json* ./
 COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/api ./apps/api
-COPY --from=build /repo/apps/web/dist ./apps/web/dist
+COPY --from=build /repo/apps/web ./apps/web
 WORKDIR /repo/apps/api
 EXPOSE 3000
 # Apply migrations then start. Run `npm run db:bootstrap` once after first deploy
