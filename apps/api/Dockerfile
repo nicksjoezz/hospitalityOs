@@ -17,6 +17,7 @@ FROM node:20-alpine AS runtime
 WORKDIR /repo
 RUN apk add --no-cache openssl
 ENV NODE_ENV=production
+COPY package.json package-lock.json* ./
 COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/api ./apps/api
