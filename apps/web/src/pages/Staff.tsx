@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiWrite } from '../lib/api';
 import { useAuth } from '../lib/auth';
-import { PageTitle, Card, Table, Td, Button, Input, Select, Badge, Empty } from '../components/ui';
+import { PageTitle, Card, Table, Td, Button, Input, Select, Badge, Empty, money } from '../components/ui';
 
 interface User { id: string; name: string; role: string }
 interface Shift { id: string; userId: string; role: string; startsAt: string; endsAt: string; status: string }
@@ -28,6 +28,13 @@ export function Staff() {
   const shifts = useQuery({ queryKey: ['shifts'], queryFn: () => apiGet<Shift[]>('/staff/shifts') });
   const leave = useQuery({ queryKey: ['leave'], queryFn: () => apiGet<Leave[]>('/staff/leave') });
   
+  // Worker payroll view (hours & earnings)
+  const myPayroll = useQuery({
+    queryKey: ['my-payroll'],
+    queryFn: () => apiGet<{ hours: number; rate: number; regular: number; overtime: number; total: number }>('/staff/payroll/mine'),
+    enabled: !isManager,
+  });
+
   // Standout Feature: Geofenced Attendance Audit
   const attendance = useQuery({
     queryKey: ['attendance'],
@@ -39,13 +46,47 @@ export function Staff() {
   const [clocking, setClocking] = useState(false);
   const [clockStatus, setClockStatus] = useState<string | null>(null);
 
-  const nameOf = (id: string) => users.data?.find((u) => u.id === id)?.name ?? id.slice(0, 8);
+  const [leaveForm, setLeaveForm] = useState({
+    type: 'ANNUAL',
+    startDate: '',
+    endDate: '',
+    reason: '',
+  });
+  const [submittingLeave, setSubmittingLeave] = useState(false);
+  const [leaveMsg, setLeaveMsg] = useState<string | null>(null);
+
+  const nameOf = (id: string) => {
+    if (user?.id === id) return `${user.name} (You)`;
+    return users.data?.find((u) => u.id === id)?.name ?? id.slice(0, 8);
+  };
 
   const createShift = async () => {
     const u = users.data?.find((x) => x.id === shift.userId);
     if (!u || !shift.startsAt || !shift.endsAt) return;
     const res = await apiWrite('POST', '/staff/shifts', { ...shift, role: u.role });
     if (!res.queued) await qc.invalidateQueries({ queryKey: ['shifts'] });
+  };
+
+  const applyLeave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!leaveForm.startDate || !leaveForm.endDate) return;
+    setSubmittingLeave(true);
+    setLeaveMsg(null);
+    try {
+      await apiWrite('POST', '/staff/leave', {
+        type: leaveForm.type,
+        startDate: new Date(leaveForm.startDate),
+        endDate: new Date(leaveForm.endDate),
+        reason: leaveForm.reason || undefined,
+      });
+      setLeaveMsg('✅ Leave application submitted. Your manager has been notified.');
+      setLeaveForm({ type: 'ANNUAL', startDate: '', endDate: '', reason: '' });
+      await qc.invalidateQueries({ queryKey: ['leave'] });
+    } catch (err) {
+      setLeaveMsg(err instanceof Error ? err.message : 'Submission failed');
+    } finally {
+      setSubmittingLeave(false);
+    }
   };
 
   const clock = async (action: 'clock-in' | 'clock-out') => {
@@ -74,10 +115,10 @@ export function Staff() {
               lat: pos.coords.latitude,
               lng: pos.coords.longitude,
             });
-            if (!res.queued && res.data.flagged) {
-              setClockStatus(`⚠️ Clocked in with flag: ${res.data.flagReason}`);
+            if (res.data?.flagged) {
+              setClockStatus(`⚠️ Clocked in, but flagged: ${res.data.flagReason}`);
             } else {
-              setClockStatus('✅ Clocked in successfully (On-site verified).');
+              setClockStatus(`✅ Clocked in successfully. GPS distance: ${res.data?.distanceMeters ?? 0}m.`);
             }
             await qc.invalidateQueries({ queryKey: ['attendance'] });
           } catch (err) {
@@ -86,17 +127,12 @@ export function Staff() {
             setClocking(false);
           }
         },
-        async () => {
-          // Fallback if user denied geolocation prompt
-          try {
-            await apiWrite<AttendanceRecord>('POST', '/staff/attendance/clock-in', {});
-            setClockStatus(`⚠️ Clocked in without GPS location (flagged for review).`);
-            await qc.invalidateQueries({ queryKey: ['attendance'] });
-          } catch (err) {
-            setClockStatus(err instanceof Error ? err.message : 'Clock in failed');
-          } finally {
-            setClocking(false);
-          }
+        async (err) => {
+          console.warn('Geolocation failed:', err);
+          await apiWrite('POST', '/staff/attendance/clock-in', {});
+          setClockStatus('⚠️ Clocked in without GPS verification.');
+          setClocking(false);
+          await qc.invalidateQueries({ queryKey: ['attendance'] });
         },
         { enableHighAccuracy: true, timeout: 8000 }
       );
@@ -113,10 +149,19 @@ export function Staff() {
     await qc.invalidateQueries({ queryKey: ['leave'] });
   };
 
+  // Filter leave and shifts for regular staff
+  const displayedLeave = isManager
+    ? (leave.data ?? [])
+    : (leave.data ?? []).filter((l) => l.userId === user?.id);
+
+  const displayedShifts = isManager
+    ? (shifts.data ?? [])
+    : (shifts.data ?? []).filter((s) => s.userId === user?.id);
+
   return (
     <div className="space-y-6">
       <PageTitle
-        title="Staff & Scheduling"
+        title={isManager ? 'Staff Operations & Shifts' : 'My Staff Hub & Timesheet'}
         action={
           <div className="flex items-center gap-2">
             <Button
@@ -125,7 +170,7 @@ export function Staff() {
               disabled={clocking}
               onClick={() => clock('clock-in')}
             >
-              📍 {clocking ? 'Verifying GPS…' : 'Clock In (Geofenced)'}
+              📍 {clocking ? 'Verifying GPS…' : 'Clock In (GPS)'}
             </Button>
             <Button
               size="sm"
@@ -144,6 +189,120 @@ export function Staff() {
           <p className="text-sm font-medium text-slate-800">{clockStatus}</p>
         </Card>
       )}
+
+      {/* Staff Self-Service: Personal Hours & Earnings */}
+      {!isManager && myPayroll.data && (
+        <Card className="border-indigo-100 bg-gradient-to-r from-indigo-50/60 via-sky-50/30 to-white">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-bold text-indigo-600 uppercase tracking-wider">My Logged Earnings (Last 30 Days)</span>
+                <Badge tone="green">Verified Clocked Hours</Badge>
+              </div>
+              <div className="mt-1 flex items-baseline gap-2">
+                <span className="text-2xl font-black text-slate-900">{money(myPayroll.data.total)}</span>
+                <span className="text-xs text-slate-500 font-medium">earned across {myPayroll.data.hours} hours worked</span>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="rounded-lg bg-white px-3 py-1.5 border border-slate-200 text-slate-700 font-medium shadow-xs">
+                Hourly Rate: <strong>{myPayroll.data.rate > 0 ? `${money(myPayroll.data.rate)}/h` : 'Pending'}</strong>
+              </span>
+              {myPayroll.data.overtime > 0 && (
+                <span className="rounded-lg bg-amber-50 px-3 py-1.5 border border-amber-200 text-amber-800 font-medium shadow-xs">
+                  OT Pay: <strong>{money(myPayroll.data.overtime)}</strong>
+                </span>
+              )}
+            </div>
+          </div>
+        </Card>
+      )}
+
+      {/* Staff Self-Service: Apply for Leave Card */}
+      <Card className="border-brand/20 bg-slate-50/40">
+        <div className="mb-3 flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-800">
+              🌴 Request Time Off / Leave
+            </h3>
+            <p className="text-xs text-slate-500">
+              Submit your leave application for manager approval. You will receive an alert once reviewed.
+            </p>
+          </div>
+          <Badge tone="sky">Staff Self-Service</Badge>
+        </div>
+
+        <form onSubmit={applyLeave} className="space-y-3">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">
+                Leave Category
+              </label>
+              <Select
+                value={leaveForm.type}
+                onChange={(e) => setLeaveForm({ ...leaveForm, type: e.target.value })}
+                className="w-full"
+              >
+                <option value="ANNUAL">🌴 Annual Vacation</option>
+                <option value="SICK">🏥 Medical / Sick Leave</option>
+                <option value="CASUAL">⚡ Casual / Personal Leave</option>
+                <option value="EMERGENCY">🚨 Family / Emergency</option>
+                <option value="MATERNITY">👶 Maternity / Paternity</option>
+                <option value="UNPAID">🗓️ Unpaid Leave</option>
+              </Select>
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">
+                Start Date
+              </label>
+              <Input
+                type="date"
+                value={leaveForm.startDate}
+                onChange={(e) => setLeaveForm({ ...leaveForm, startDate: e.target.value })}
+                className="w-full"
+                required
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600">
+                End Date (Inclusive)
+              </label>
+              <Input
+                type="date"
+                value={leaveForm.endDate}
+                onChange={(e) => setLeaveForm({ ...leaveForm, endDate: e.target.value })}
+                className="w-full"
+                required
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1 block text-xs font-medium text-slate-600">
+              Reason / Shift Handover Arrangement
+            </label>
+            <Input
+              placeholder="e.g. Attending family wedding / Scheduled doctor appointment. Shift covered by Emeka."
+              value={leaveForm.reason}
+              onChange={(e) => setLeaveForm({ ...leaveForm, reason: e.target.value })}
+              className="w-full"
+            />
+          </div>
+
+          <div className="flex items-center justify-between">
+            {leaveMsg && (
+              <p className="text-xs font-medium text-slate-700">{leaveMsg}</p>
+            )}
+            <div className="ml-auto">
+              <Button type="submit" disabled={submittingLeave}>
+                {submittingLeave ? 'Submitting…' : 'Submit Leave Request'}
+              </Button>
+            </div>
+          </div>
+        </form>
+      </Card>
 
       {isManager && (
         <Card>
@@ -192,10 +351,12 @@ export function Staff() {
       )}
 
       <div>
-        <h3 className="mb-2 text-sm font-semibold text-slate-600">Upcoming Shifts</h3>
+        <h3 className="mb-2 text-sm font-semibold text-slate-600">
+          {isManager ? 'All Upcoming Shifts' : 'My Upcoming Shifts'}
+        </h3>
         {shifts.isLoading ? <Empty>Loading…</Empty> : (
           <Table headers={['Staff', 'Role', 'Start', 'End', 'Status']}>
-            {shifts.data?.map((s) => (
+            {displayedShifts.map((s) => (
               <tr key={s.id}>
                 <Td>{nameOf(s.userId)}</Td>
                 <Td>{s.role}</Td>
@@ -204,33 +365,41 @@ export function Staff() {
                 <Td><Badge tone={s.status === 'COMPLETED' ? 'green' : 'sky'}>{s.status}</Badge></Td>
               </tr>
             ))}
-            {shifts.data?.length === 0 && <tr><Td>No shifts scheduled.</Td></tr>}
+            {displayedShifts.length === 0 && <tr><Td>No shifts scheduled.</Td></tr>}
           </Table>
         )}
       </div>
 
       <div>
-        <h3 className="mb-2 text-sm font-semibold text-slate-600">Leave Requests</h3>
+        <h3 className="mb-2 text-sm font-semibold text-slate-600">
+          {isManager ? 'Staff Leave Requests & Approvals' : 'My Leave Requests'}
+        </h3>
         {leave.isLoading ? <Empty>Loading…</Empty> : (
           <Table headers={['Staff', 'Type', 'From', 'To', 'Status', 'Actions']}>
-            {leave.data?.map((l) => (
+            {displayedLeave.map((l) => (
               <tr key={l.id}>
                 <Td>{nameOf(l.userId)}</Td>
-                <Td>{l.type}</Td>
+                <Td><Badge tone="slate">{l.type}</Badge></Td>
                 <Td><span className="text-xs">{l.startDate?.slice(0, 10)}</span></Td>
                 <Td><span className="text-xs">{l.endDate?.slice(0, 10)}</span></Td>
-                <Td><Badge tone={l.status === 'APPROVED' ? 'green' : l.status === 'REJECTED' ? 'red' : 'amber'}>{l.status}</Badge></Td>
                 <Td>
-                  {isManager && l.status === 'PENDING' && (
+                  <Badge tone={l.status === 'APPROVED' ? 'green' : l.status === 'REJECTED' ? 'red' : 'amber'}>
+                    {l.status}
+                  </Badge>
+                </Td>
+                <Td>
+                  {isManager && l.status === 'PENDING' ? (
                     <div className="flex gap-1">
                       <Button size="sm" variant="success" onClick={() => decideLeave(l.id, 'APPROVED')}>Approve</Button>
                       <Button size="sm" variant="danger" onClick={() => decideLeave(l.id, 'REJECTED')}>Reject</Button>
                     </div>
+                  ) : (
+                    <span className="text-xs text-slate-400">—</span>
                   )}
                 </Td>
               </tr>
             ))}
-            {leave.data?.length === 0 && <tr><Td>No leave requests.</Td></tr>}
+            {displayedLeave.length === 0 && <tr><Td>No leave requests found.</Td></tr>}
           </Table>
         )}
       </div>
