@@ -21,7 +21,7 @@ RUN npm run build --workspace @hospitalityos/shared \
 # ---------- runtime ----------
 FROM node:20-alpine AS runtime
 WORKDIR /repo
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl postgresql postgresql-contrib redis
 ENV NODE_ENV=production
 ENV SERVE_WEB=true
 ENV WEB_DIST=/repo/apps/web/dist
@@ -40,7 +40,10 @@ COPY --from=build /repo/node_modules ./node_modules
 COPY --from=build /repo/packages ./packages
 COPY --from=build /repo/apps/api ./apps/api
 COPY --from=build /repo/apps/web ./apps/web
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
 WORKDIR /repo/apps/api
 EXPOSE 3000
-# Auto-resolve DATABASE_URL if Railway sets DATABASE_PUBLIC_URL / POSTGRES_URL, then migrate & start
-CMD ["sh", "-c", "export DATABASE_URL=\"${DATABASE_URL:-${DATABASE_PUBLIC_URL:-${DATABASE_PRIVATE_URL:-${POSTGRES_URL:-${POSTGRESQL_URL}}}}}\"; npx prisma migrate deploy && node dist/main.js"]
+
+ENTRYPOINT ["/entrypoint.sh"]
