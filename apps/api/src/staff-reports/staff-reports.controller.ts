@@ -40,6 +40,12 @@ export class StaffReportsController {
     return this.reports.submit(actor, dto);
   }
 
+  /** Staff members can view the status of their own submitted reports (confidential to them). */
+  @Get('mine')
+  myReports(@CurrentActor() actor: Actor) {
+    return this.reports.listMine(actor);
+  }
+
   // Reading is restricted to OWNER/MANAGER (the subject can never see reports).
   @Roles(Role.OWNER, Role.MANAGER)
   @Get()

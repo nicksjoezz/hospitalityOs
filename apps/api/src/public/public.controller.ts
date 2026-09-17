@@ -10,7 +10,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
-import { ActorType, optionalEmail, ReservationSource, ReservationStatus } from '@hospitalityos/shared';
+import { ActorType, LineType, optionalEmail, ReservationSource, ReservationStatus, Role } from '@hospitalityos/shared';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { Public } from '../common/decorators';
 import { PrismaService } from '../prisma/prisma.service';
@@ -209,6 +209,194 @@ export class PublicController {
       },
     });
     return { ok: true, message: 'Request received — our team will assist you.' };
+  }
+
+  /** Complete in-house guest stay & live folio lookup by room number & phone or reservationId. */
+  @Get('stay')
+  async stay(
+    @Query('reservationId') reservationId?: string,
+    @Query('roomNumber') roomNumber?: string,
+    @Query('phone') phone?: string,
+    @Query('hotelId') hotelId?: string,
+  ) {
+    let whereClause: any = {};
+    if (reservationId) {
+      whereClause = { id: reservationId };
+      if (phone) {
+        whereClause.guest = { phone: { contains: phone.trim() } };
+      }
+    } else if (roomNumber && phone) {
+      const room = await this.prisma.room.findFirst({
+        where: { roomNumber: roomNumber.trim(), ...(hotelId ? { hotelId } : {}) },
+      });
+      if (!room) throw new NotFoundException(`Room ${roomNumber} not found`);
+      whereClause = {
+        roomId: room.id,
+        status: { in: [ReservationStatus.CHECKED_IN, ReservationStatus.CONFIRMED] },
+        guest: { phone: { contains: phone.trim() } },
+      };
+    } else {
+      throw new BadRequestException('Provide reservationId OR roomNumber and phone');
+    }
+
+    const reservation = await this.prisma.reservation.findFirst({
+      where: whereClause,
+      include: {
+        guest: true,
+        room: true,
+        roomType: true,
+        folio: {
+          include: {
+            lineItems: { orderBy: { at: 'desc' } },
+            payments: { orderBy: { at: 'desc' } },
+          },
+        },
+        hotel: { select: { id: true, name: true, currency: true, settings: true, phone: true } },
+      },
+    });
+    if (!reservation) {
+      throw new NotFoundException('Active stay not found. Please verify your room number and phone.');
+    }
+
+    return {
+      reservationId: reservation.id,
+      hotel: {
+        id: reservation.hotel.id,
+        name: reservation.hotel.name,
+        currency: reservation.hotel.currency,
+        phone: reservation.hotel.phone,
+        wifiPassword: (reservation.hotel.settings as any)?.wifiPassword ?? 'WelcomeGuests',
+      },
+      guest: {
+        name: reservation.guest.name,
+        phone: reservation.guest.phone,
+      },
+      room: {
+        number: reservation.room?.roomNumber ?? 'Unassigned',
+        type: reservation.roomType?.name ?? 'Standard Room',
+      },
+      checkIn: reservation.checkInDate.toISOString().slice(0, 10),
+      checkOut: reservation.checkOutDate.toISOString().slice(0, 10),
+      status: reservation.status,
+      folio: reservation.folio
+        ? {
+            id: reservation.folio.id,
+            currency: reservation.folio.currency,
+            totalCharges: reservation.folio.totalCharges,
+            totalPaid: reservation.folio.totalPaid,
+            balance: reservation.folio.balance,
+            items: reservation.folio.lineItems.map((l) => ({
+              id: l.id,
+              description: l.description,
+              amount: l.amount,
+              type: l.type,
+              at: l.at.toISOString(),
+            })),
+            payments: reservation.folio.payments.map((p) => ({
+              id: p.id,
+              amount: p.amount,
+              method: p.method,
+              at: p.at.toISOString(),
+            })),
+          }
+        : null,
+    };
+  }
+
+  /** In-room dining room service order: charges folio and alerts Kitchen/Bar. */
+  @Post('portal/order')
+  async portalOrder(
+    @Body()
+    body: {
+      reservationId: string;
+      phone: string;
+      items: { menuItemId: string; quantity: number; notes?: string }[];
+      specialInstructions?: string;
+    },
+  ) {
+    const reservation = await this.prisma.reservation.findUnique({
+      where: { id: body.reservationId },
+      include: { guest: true, room: true, folio: true },
+    });
+    if (!reservation || reservation.guest.phone !== body.phone) {
+      throw new NotFoundException('Reservation not found or phone mismatch');
+    }
+    if (!reservation.folio) {
+      throw new BadRequestException('No active folio found for this stay');
+    }
+    if (!body.items || body.items.length === 0) {
+      throw new BadRequestException('Order items required');
+    }
+
+    const itemIds = body.items.map((i) => i.menuItemId);
+    const menuItems = await this.prisma.menuItem.findMany({
+      where: { id: { in: itemIds } },
+    });
+    const itemMap = new Map(menuItems.map((m) => [m.id, m]));
+
+    let totalMinor = 0;
+    const itemSummaries: string[] = [];
+
+    for (const orderItem of body.items) {
+      const mi = itemMap.get(orderItem.menuItemId);
+      if (!mi) continue;
+      const qty = Math.max(1, orderItem.quantity);
+      totalMinor += mi.price * qty;
+      itemSummaries.push(`${qty}x ${mi.name}${orderItem.notes ? ` (${orderItem.notes})` : ''}`);
+    }
+
+    if (totalMinor === 0) throw new BadRequestException('Invalid order items');
+
+    const summaryText = itemSummaries.join(', ');
+    const roomNum = reservation.room?.roomNumber ?? 'In-Room';
+
+    await this.prisma.folioLineItem.create({
+      data: {
+        folioId: reservation.folio.id,
+        type: LineType.RESTAURANT,
+        description: `Room Service (${roomNum}): ${summaryText.slice(0, 80)}`,
+        amount: totalMinor,
+        quantity: 1,
+        by: 'In-Room Guest Portal',
+      },
+    });
+
+    await this.prisma.folio.update({
+      where: { id: reservation.folio.id },
+      data: {
+        totalCharges: { increment: totalMinor },
+        balance: { increment: totalMinor },
+      },
+    });
+
+    await this.prisma.notification.createMany({
+      data: [
+        {
+          hotelId: reservation.hotelId,
+          role: Role.KITCHEN,
+          type: 'order.room_service',
+          title: `Room Service Order: ${roomNum}`,
+          body: `${summaryText}${body.specialInstructions ? ` · Note: ${body.specialInstructions}` : ''}`,
+          entityRef: reservation.id,
+        },
+        {
+          hotelId: reservation.hotelId,
+          role: Role.FRONT_DESK,
+          type: 'order.room_service',
+          title: `Room Service charged to ${roomNum}`,
+          body: `${summaryText} — ${(totalMinor / 100).toLocaleString()}`,
+          entityRef: reservation.id,
+        },
+      ],
+    });
+
+    return {
+      ok: true,
+      total: totalMinor,
+      itemsSummary: summaryText,
+      roomNumber: roomNum,
+      message: `Your room service order has been sent to the kitchen for delivery to ${roomNum}!`,
+    };
   }
 
   @Get('track/:id')

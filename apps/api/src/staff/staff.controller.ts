@@ -68,6 +68,30 @@ export class StaffController {
     return this.staff.payroll(user.hotelId, f, t);
   }
 
+  /** Staff member view of their own worked hours, hourly rate, and earned pay. */
+  @Get('payroll/mine')
+  payrollMine(
+    @CurrentActor() actor: Actor,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const f = from ? new Date(from) : new Date(Date.now() - 30 * 86_400_000);
+    const t = to ? new Date(to) : new Date();
+    return this.staff.payrollMine(actor, f, t);
+  }
+
+  /** Finalize and approve payroll for a period, logging audit and notifying staff. */
+  @Roles(Role.OWNER, Role.MANAGER, Role.ACCOUNTANT)
+  @Post('payroll/finalize')
+  finalizePayroll(
+    @CurrentActor() actor: Actor,
+    @Body() body: { from: string; to: string; note?: string },
+  ) {
+    const f = new Date(body.from);
+    const t = new Date(body.to);
+    return this.staff.finalizePayroll(actor, f, t, body.note);
+  }
+
   @Get('shifts')
   listShifts(
     @CurrentUser() user: AuthUser,

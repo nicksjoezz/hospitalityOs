@@ -158,6 +158,16 @@ export class StaffReportsService {
     return rows.map((r) => this.sanitize(r));
   }
 
+  async listMine(actor: Actor) {
+    if (!actor.id) throw new ForbiddenException('A staff identity is required');
+    const rows = await this.prisma.staffReport.findMany({
+      where: { hotelId: actor.hotelId, reporterId: actor.id },
+      orderBy: { at: 'desc' },
+      take: 50,
+    });
+    return rows.map((r) => this.sanitize(r));
+  }
+
   async get(actor: Actor, id: string) {
     this.assertManager(actor);
     const report = await this.prisma.staffReport.findFirst({
@@ -193,6 +203,21 @@ export class StaffReportsService {
       entityId: id,
       after: { id, status },
     });
+
+    // Notify the reporter if the report was not anonymous so they know it was addressed
+    if (updated.reporterId) {
+      await this.prisma.notification.create({
+        data: {
+          hotelId: actor.hotelId,
+          userId: updated.reporterId,
+          type: 'staff_report.status_updated',
+          title: `Report status updated: ${status.replace('_', ' ')}`,
+          body: `Your confidential report "${updated.title}" is now marked as ${status.replace('_', ' ')}.`,
+          entityRef: updated.id,
+        },
+      });
+    }
+
     return this.sanitize(updated);
   }
 }

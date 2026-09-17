@@ -14,6 +14,7 @@ const createSchema = z.object({
   email: z.string().email().optional(),
   whatsappId: z.string().optional(),
   extraPermissions: z.array(z.string()).optional(),
+  hourlyRate: z.number().int().nonnegative().optional(),
 });
 const updateSchema = z.object({
   name: z.string().optional(),
@@ -22,6 +23,7 @@ const updateSchema = z.object({
   active: z.boolean().optional(),
   whatsappId: z.string().optional(),
   extraPermissions: z.array(z.string()).optional(),
+  hourlyRate: z.number().int().nonnegative().optional(),
 });
 
 @Roles(Role.OWNER, Role.MANAGER)

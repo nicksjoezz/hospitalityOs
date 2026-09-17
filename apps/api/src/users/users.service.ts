@@ -39,6 +39,7 @@ export class UsersService {
       email?: string;
       whatsappId?: string;
       extraPermissions?: string[];
+      hourlyRate?: number;
     },
   ) {
     const existing = await this.prisma.user.findFirst({
@@ -59,22 +60,45 @@ export class UsersService {
       },
       select: publicSelect,
     });
+    if (input.hourlyRate !== undefined) {
+      await this.prisma.staffProfile.upsert({
+        where: { userId: user.id },
+        create: {
+          userId: user.id,
+          department: user.role,
+          hourlyRate: input.hourlyRate,
+        },
+        update: {
+          hourlyRate: input.hourlyRate,
+          department: user.role,
+        },
+      });
+    }
     await this.audit.record({
       actor,
       action: 'user.create',
       entity: 'User',
       entityId: user.id,
-      after: { name: user.name, role: user.role },
+      after: { name: user.name, role: user.role, hourlyRate: input.hourlyRate },
     });
-    return user;
+    return { ...user, hourlyRate: input.hourlyRate ?? null };
   }
 
-  list(hotelId: string) {
-    return this.prisma.user.findMany({
+  async list(hotelId: string) {
+    const users = await this.prisma.user.findMany({
       where: { hotelId, deletedAt: null },
       select: publicSelect,
       orderBy: { name: 'asc' },
     });
+    const profiles = await this.prisma.staffProfile.findMany({
+      where: { userId: { in: users.map((u) => u.id) } },
+    });
+    const profileMap = new Map(profiles.map((p) => [p.userId, p]));
+    return users.map((u) => ({
+      ...u,
+      hourlyRate: profileMap.get(u.id)?.hourlyRate ?? null,
+      department: profileMap.get(u.id)?.department ?? u.role,
+    }));
   }
 
   private async ownedUser(actor: Actor, id: string) {
@@ -88,10 +112,33 @@ export class UsersService {
   async update(
     actor: Actor,
     id: string,
-    data: { name?: string; email?: string; role?: Role; active?: boolean; extraPermissions?: string[]; whatsappId?: string },
+    data: {
+      name?: string;
+      email?: string;
+      role?: Role;
+      active?: boolean;
+      extraPermissions?: string[];
+      whatsappId?: string;
+      hourlyRate?: number;
+    },
   ) {
-    await this.ownedUser(actor, id);
-    const user = await this.prisma.user.update({ where: { id }, data, select: publicSelect });
+    const prev = await this.ownedUser(actor, id);
+    const { hourlyRate, ...userData } = data;
+    const user = await this.prisma.user.update({ where: { id }, data: userData, select: publicSelect });
+    if (hourlyRate !== undefined) {
+      await this.prisma.staffProfile.upsert({
+        where: { userId: id },
+        create: {
+          userId: id,
+          department: data.role ?? prev.role,
+          hourlyRate,
+        },
+        update: {
+          hourlyRate,
+          ...(data.role ? { department: data.role } : {}),
+        },
+      });
+    }
     await this.audit.record({
       actor,
       action: 'user.update',
@@ -99,7 +146,7 @@ export class UsersService {
       entityId: id,
       after: data,
     });
-    return user;
+    return { ...user, hourlyRate: hourlyRate ?? undefined };
   }
 
   async resetPassword(actor: Actor, id: string, newPassword: string) {

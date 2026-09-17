@@ -202,12 +202,12 @@ export class StaffService {
     });
   }
 
-  requestLeave(
+  async requestLeave(
     actor: Actor,
     input: { type: string; startDate: Date; endDate: Date; reason?: string },
   ) {
     if (!actor.id) throw new BadRequestException('User required');
-    return this.prisma.leaveRequest.create({
+    const req = await this.prisma.leaveRequest.create({
       data: {
         hotelId: actor.hotelId,
         userId: actor.id,
@@ -218,6 +218,27 @@ export class StaffService {
         status: ApprovalStatus.PENDING,
       },
     });
+
+    try {
+      const user = await this.prisma.user.findUnique({
+        where: { id: actor.id },
+        select: { name: true },
+      });
+      await this.prisma.notification.create({
+        data: {
+          hotelId: actor.hotelId,
+          role: Role.MANAGER,
+          type: 'staff.leave_requested',
+          title: `Leave requested: ${user?.name ?? 'Staff member'}`,
+          body: `${input.type} leave from ${new Date(input.startDate).toLocaleDateString()} to ${new Date(input.endDate).toLocaleDateString()}. ${input.reason ? `Reason: ${input.reason}` : ''}`,
+          entityRef: req.id,
+        },
+      });
+    } catch {
+      // Notification is non-blocking
+    }
+
+    return req;
   }
 
   async decideLeave(actor: Actor, id: string, status: ApprovalStatus) {
@@ -225,14 +246,31 @@ export class StaffService {
       where: { id, hotelId: actor.hotelId },
     });
     if (!leave) throw new NotFoundException('Leave request not found');
-    return this.prisma.leaveRequest.update({
+    const updated = await this.prisma.leaveRequest.update({
       where: { id },
       data: { status, decidedById: actor.id },
     });
+
+    try {
+      await this.prisma.notification.create({
+        data: {
+          hotelId: actor.hotelId,
+          userId: leave.userId,
+          type: 'staff.leave_decided',
+          title: `Leave request ${status.toLowerCase()}`,
+          body: `Your ${leave.type} leave request from ${new Date(leave.startDate).toLocaleDateString()} has been ${status.toLowerCase()}.`,
+          entityRef: leave.id,
+        },
+      });
+    } catch {
+      // Notification is non-blocking
+    }
+
+    return updated;
   }
 
   /**
-   * Weekly-style payroll estimate from attendance × hourly rate, with overtime
+   * Weekly/monthly payroll calculation from attendance × hourly rate, with overtime
    * over 40h at 1.5× (plan.md §13; KitchenOS-inspired). Amounts in minor units.
    */
   async payroll(hotelId: string, from: Date, to: Date) {
@@ -243,15 +281,15 @@ export class StaffService {
         clockOutAt: { not: null, lte: to },
       },
     });
+    const users = await this.prisma.user.findMany({
+      where: { hotelId, active: true, deletedAt: null },
+      select: { id: true, name: true, role: true, phone: true },
+      orderBy: { name: 'asc' },
+    });
     const profiles = await this.prisma.staffProfile.findMany({
-      where: { userId: { in: [...new Set(records.map((r) => r.userId))] } },
+      where: { userId: { in: users.map((u) => u.id) } },
     });
     const rateOf = new Map(profiles.map((p) => [p.userId, p.hourlyRate ?? 0]));
-    const users = await this.prisma.user.findMany({
-      where: { id: { in: [...new Set(records.map((r) => r.userId))] } },
-      select: { id: true, name: true },
-    });
-    const nameOf = new Map(users.map((u) => [u.id, u.name]));
 
     const hoursByUser = new Map<string, number>();
     for (const r of records) {
@@ -260,15 +298,18 @@ export class StaffService {
       hoursByUser.set(r.userId, (hoursByUser.get(r.userId) ?? 0) + hours);
     }
 
-    const lines = [...hoursByUser.entries()].map(([userId, hours]) => {
-      const rate = rateOf.get(userId) ?? 0;
+    const lines = users.map((u) => {
+      const hours = hoursByUser.get(u.id) ?? 0;
+      const rate = rateOf.get(u.id) ?? 0;
       const regularHours = Math.min(hours, 40);
       const overtimeHours = Math.max(0, hours - 40);
       const regular = Math.round(regularHours * rate);
       const overtime = Math.round(overtimeHours * rate * 1.5);
       return {
-        userId,
-        name: nameOf.get(userId) ?? userId,
+        userId: u.id,
+        name: u.name,
+        role: u.role,
+        phone: u.phone,
         hours: Math.round(hours * 10) / 10,
         rate,
         regular,
@@ -276,12 +317,87 @@ export class StaffService {
         total: regular + overtime,
       };
     });
+
+    lines.sort((a, b) => b.hours - a.hours || a.name.localeCompare(b.name));
     const totalLabor = lines.reduce((s, l) => s + l.total, 0);
     return {
       from: from.toISOString(),
       to: to.toISOString(),
       lines,
       totalLabor,
+    };
+  }
+
+  async payrollMine(actor: Actor, from: Date, to: Date) {
+    if (!actor.id) throw new BadRequestException('User required');
+    const records = await this.prisma.attendanceRecord.findMany({
+      where: {
+        hotelId: actor.hotelId,
+        userId: actor.id,
+        clockInAt: { gte: from },
+        clockOutAt: { not: null, lte: to },
+      },
+    });
+    const profile = await this.prisma.staffProfile.findUnique({
+      where: { userId: actor.id },
+    });
+    const rate = profile?.hourlyRate ?? 0;
+    let hours = 0;
+    for (const r of records) {
+      if (!r.clockInAt || !r.clockOutAt) continue;
+      hours += (r.clockOutAt.getTime() - r.clockInAt.getTime()) / 3_600_000;
+    }
+    const regularHours = Math.min(hours, 40);
+    const overtimeHours = Math.max(0, hours - 40);
+    const regular = Math.round(regularHours * rate);
+    const overtime = Math.round(overtimeHours * rate * 1.5);
+    return {
+      from: from.toISOString(),
+      to: to.toISOString(),
+      hours: Math.round(hours * 10) / 10,
+      regularHours: Math.round(regularHours * 10) / 10,
+      overtimeHours: Math.round(overtimeHours * 10) / 10,
+      rate,
+      regular,
+      overtime,
+      total: regular + overtime,
+    };
+  }
+
+  async finalizePayroll(actor: Actor, from: Date, to: Date, note?: string) {
+    const p = await this.payroll(actor.hotelId, from, to);
+    await this.audit.record({
+      actor,
+      action: 'payroll.finalize',
+      entity: 'Payroll',
+      entityId: `${from.toISOString().slice(0, 10)}_${to.toISOString().slice(0, 10)}`,
+      after: {
+        from: p.from,
+        to: p.to,
+        totalLabor: p.totalLabor,
+        staffCount: p.lines.filter((l) => l.hours > 0).length,
+        note,
+      },
+    });
+
+    const staffWithPay = p.lines.filter((l) => l.total > 0);
+    if (staffWithPay.length > 0) {
+      await this.prisma.notification.createMany({
+        data: staffWithPay.map((s) => ({
+          hotelId: actor.hotelId,
+          userId: s.userId,
+          type: 'payroll.finalized',
+          title: 'Payslip Ready for Payout',
+          body: `Your payslip for ${from.toLocaleDateString()} to ${to.toLocaleDateString()} has been finalized. Total: ${(s.total / 100).toLocaleString()}`,
+        })),
+      });
+    }
+
+    return {
+      ok: true,
+      totalLabor: p.totalLabor,
+      staffPaidCount: staffWithPay.length,
+      period: { from: p.from, to: p.to },
     };
   }
 
