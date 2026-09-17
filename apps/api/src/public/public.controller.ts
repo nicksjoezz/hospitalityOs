@@ -353,7 +353,7 @@ export class PublicController {
     await this.prisma.folioLineItem.create({
       data: {
         folioId: reservation.folio.id,
-        type: LineType.RESTAURANT,
+        type: LineType.FNB,
         description: `Room Service (${roomNum}): ${summaryText.slice(0, 80)}`,
         amount: totalMinor,
         quantity: 1,
