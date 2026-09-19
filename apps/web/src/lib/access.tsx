@@ -33,6 +33,9 @@ import { Channels } from '../pages/Channels';
 import { Billing } from '../pages/Billing';
 import { Promotions } from '../pages/Promotions';
 import { Operations } from '../pages/Operations';
+import { Messages } from '../pages/Messages';
+import { Kiosk } from '../pages/Kiosk';
+import { NightAudit } from '../pages/NightAudit';
 
 export type Role =
   | 'OWNER' | 'MANAGER' | 'FRONT_DESK' | 'HOUSEKEEPING' | 'MAINTENANCE'
@@ -55,6 +58,7 @@ export const ROUTES: AppRoute[] = [
   { path: '/rooms', label: 'Rooms', element: <Rooms />, roles: ['FRONT_DESK', 'HOUSEKEEPING'] },
   { path: '/rates', label: 'Rates', element: <Rates />, feature: Feature.RATE_MANAGEMENT, roles: [] },
   { path: '/channels', label: 'Channels', element: <Channels />, feature: Feature.CHANNEL_MANAGER, roles: [] },
+  { path: '/messages', label: 'Messages', element: <Messages />, roles: ['FRONT_DESK'] },
   { path: '/guests', label: 'CRM', element: <Guests />, roles: ['FRONT_DESK'] },
   { path: '/housekeeping', label: 'Housekeeping', element: <Housekeeping />, roles: ['HOUSEKEEPING', 'FRONT_DESK'] },
   { path: '/maintenance', label: 'Maintenance', element: <Maintenance />, roles: ['MAINTENANCE', 'HOUSEKEEPING'] },
@@ -68,6 +72,7 @@ export const ROUTES: AppRoute[] = [
   { path: '/procurement', label: 'Procurement', element: <Procurement />, feature: Feature.PROCUREMENT, roles: ['PROCUREMENT'] },
   { path: '/revenue', label: 'Revenue', element: <Revenue />, feature: Feature.ANALYTICS, roles: [] },
   { path: '/billing', label: 'Billing', element: <Billing />, feature: Feature.BILLING_INVOICES, roles: ['ACCOUNTANT'] },
+  { path: '/night-audit', label: 'Night Audit', element: <NightAudit />, roles: ['ACCOUNTANT', 'FRONT_DESK'] },
   { path: '/promotions', label: 'Promos', element: <Promotions />, feature: Feature.MARKETING, roles: [] },
   { path: '/operations', label: 'Operations', element: <Operations />, roles: ['MAINTENANCE'] },
   { path: '/marketing', label: 'Marketing', element: <Marketing />, feature: Feature.MARKETING, roles: [] },
@@ -81,6 +86,14 @@ export const ROUTES: AppRoute[] = [
   { path: '/audit', label: 'Audit', element: <Audit />, roles: [] },
   { path: '/notifications', label: 'Alerts', element: <Notifications /> },
   { path: '/gm', label: 'AI GM', element: <GM />, feature: Feature.AI_ASSISTANT, roles: [] },
+  { path: '/kiosk', element: <Kiosk />, roles: ['FRONT_DESK'] },
+  { path: '/front-office', element: <Dashboard />, roles: ['FRONT_DESK'] },
+  { path: '/reservation-calendar', element: <Rack />, roles: ['FRONT_DESK'] },
+  { path: '/rates-inventory', element: <Rates />, feature: Feature.RATE_MANAGEMENT, roles: [] },
+  { path: '/revenue-manager', element: <Revenue />, feature: Feature.ANALYTICS, roles: [] },
+  { path: '/stock-management', element: <Inventory />, feature: Feature.INVENTORY, roles: ['PROCUREMENT', 'KITCHEN', 'BAR', 'HOUSEKEEPING'] },
+  { path: '/direct-billing', element: <Billing />, feature: Feature.BILLING_INVOICES, roles: ['ACCOUNTANT'] },
+  { path: '/analytics', element: <Revenue />, feature: Feature.ANALYTICS, roles: [] },
 ];
 
 /** The owner/manager executive home; rendered at '/' for managers. */

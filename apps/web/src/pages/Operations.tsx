@@ -1,22 +1,41 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { apiGet, apiWrite } from '../lib/api';
 import { PageTitle, Card, Table, Td, Button, Input, Select, Badge, Empty, money } from '../components/ui';
 
-interface AuditRun { id: string; businessDate: string; summary: { arrivals: number; departures: number; noShows: number; occupancyPct: number; revenueCollected: number }; runAt: string }
-interface Schedule { id: string; title: string; frequency: string; nextRunAt: string; active: boolean }
-interface Asset { id: string; name: string; category: string | null; status: string; location: string | null }
+interface Schedule {
+  id: string;
+  title: string;
+  frequency: string;
+  nextRunAt: string;
+  active: boolean;
+}
+
+interface Asset {
+  id: string;
+  name: string;
+  category: string | null;
+  status: string;
+  location: string | null;
+}
 
 interface GeneratorMetrics {
   totalRunHours: number;
   totalDieselLiters: number;
   fuelAddedTotal: number;
-  totalCostMinor: number;
-  occupiedRoomNights: number;
-  dieselCporMinor: number;
+  totalSpendMinor: number;
   avgConsumptionPerHour: number;
-  anomalies: { logId: string; reason: string; consumptionPerHour: number }[];
-  logCount: number;
+  costPerHourMinor: number;
+  cporMinor: number;
+  occupiedRoomsTonight: number;
+  anomalies?: {
+    logId: string;
+    generatorName: string;
+    variancePct: number;
+    reason: string;
+    flaggedAt: string;
+  }[];
 }
 
 interface GeneratorLog {
@@ -33,13 +52,18 @@ interface GeneratorLog {
 
 export function Operations() {
   const qc = useQueryClient();
-  const runs = useQuery({ queryKey: ['na-runs'], queryFn: () => apiGet<AuditRun[]>('/night-audit/runs') });
   const schedules = useQuery({ queryKey: ['pm'], queryFn: () => apiGet<Schedule[]>('/maintenance/schedules') });
   const assets = useQuery({ queryKey: ['assets'], queryFn: () => apiGet<Asset[]>('/maintenance/assets') });
-  
+
   // Standout Feature: Energy & Generator Tracking
-  const genMetrics = useQuery({ queryKey: ['gen-metrics'], queryFn: () => apiGet<GeneratorMetrics>('/maintenance/generator/metrics') });
-  const genLogs = useQuery({ queryKey: ['gen-logs'], queryFn: () => apiGet<GeneratorLog[]>('/maintenance/generator/logs') });
+  const genMetrics = useQuery({
+    queryKey: ['gen-metrics'],
+    queryFn: () => apiGet<GeneratorMetrics>('/maintenance/generator/metrics'),
+  });
+  const genLogs = useQuery({
+    queryKey: ['gen-logs'],
+    queryFn: () => apiGet<GeneratorLog[]>('/maintenance/generator/logs'),
+  });
 
   const [sched, setSched] = useState({ title: '', frequency: 'MONTHLY' });
   const [asset, setAsset] = useState({ name: '', category: '' });
@@ -51,13 +75,6 @@ export function Operations() {
     dieselConsumedLiters: '',
     notes: '',
   });
-  const [msg, setMsg] = useState<string | null>(null);
-
-  const runAudit = async () => {
-    const res = await apiWrite<{ businessDate: string; summary: { noShows: number } }>('POST', '/night-audit/run', {});
-    if (!res.queued) setMsg(`Night audit closed ${res.data.businessDate}: ${res.data.summary.noShows} no-show(s).`);
-    await qc.invalidateQueries({ queryKey: ['na-runs'] });
-  };
 
   const addSchedule = async () => {
     if (!sched.title) return;
@@ -99,16 +116,49 @@ export function Operations() {
   return (
     <div className="space-y-6">
       <PageTitle
-        title="Operations — Night Audit, Energy & Assets"
-        action={<Button onClick={runAudit}>Run Night Audit</Button>}
+        title="Operations — Facilities, Energy & Maintenance"
+        action={
+          <Link
+            to="/night-audit"
+            className="flex items-center gap-1.5 rounded-xl border border-indigo-500/30 bg-indigo-950/40 px-3 py-1.5 text-xs font-semibold text-indigo-300 hover:bg-indigo-900/40 transition-colors"
+          >
+            <span>🌙</span>
+            <span>Front Desk Night Audit →</span>
+          </Link>
+        }
       />
-      {msg && <Card className="bg-emerald-50"><p className="text-sm text-emerald-700">{msg}</p></Card>}
 
-      {/* Energy & Generator Cost Intelligence Card */}
+      {/* Information Banner: Separation of Concerns */}
+      <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-800 bg-slate-900/60 p-3.5 text-xs text-slate-400">
+        <div className="flex items-center gap-2.5">
+          <span className="text-base">ℹ️</span>
+          <div>
+            <span className="font-semibold text-slate-200">Looking for End-of-Day Financial Rollover?</span>
+            <p className="text-[11px] text-slate-400">
+              Night Audit (charge postings, no-show resolution, zero-variance folio balancing) is handled under the dedicated Front Office & Accounting module.
+            </p>
+          </div>
+        </div>
+        <Link
+          to="/night-audit"
+          className="shrink-0 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 transition-colors shadow-sm"
+        >
+          Open Night Audit
+        </Link>
+      </div>
+
+      {/* ========================================================= */}
+      {/* 1. STANDOUT FEATURE: ENERGY & DIESEL GENERATOR TRACKING */}
+      {/* ========================================================= */}
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <h3 className="text-base font-semibold text-slate-800">⚡ Energy & Generator Cost Intelligence</h3>
-          <Badge tone="sky">Standout Feature</Badge>
+          <div className="flex items-center gap-2">
+            <span className="text-base">⚡</span>
+            <h3 className="text-base font-bold text-slate-800">
+              Energy &amp; Generator Cost Intelligence
+            </h3>
+          </div>
+          <Badge tone="sky">HospitalityOS Proprietary CPOR</Badge>
         </div>
 
         {genMetrics.data?.anomalies && genMetrics.data.anomalies.length > 0 && (
@@ -117,7 +167,9 @@ export function Operations() {
               <span>⚠️ Fuel Shrinkage / Anomaly Alert</span>
             </div>
             {genMetrics.data.anomalies.map((a, i) => (
-              <p key={i} className="text-xs mt-1 text-amber-700">{a.reason}</p>
+              <p key={i} className="text-xs mt-1 text-amber-700">
+                {a.generatorName}: {a.reason} ({a.variancePct}% variance)
+              </p>
             ))}
           </div>
         )}
@@ -125,30 +177,46 @@ export function Operations() {
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Card>
             <p className="text-xs text-slate-400">Total Run Hours</p>
-            <p className="text-2xl font-bold text-slate-800">{genMetrics.data?.totalRunHours ?? 0} hrs</p>
-            <p className="text-xs text-slate-400 mt-1">Avg {genMetrics.data?.avgConsumptionPerHour ?? 0} L/hr</p>
+            <p className="text-2xl font-bold text-slate-800">
+              {genMetrics.data?.totalRunHours ?? 0} hrs
+            </p>
+            <p className="text-xs text-slate-400 mt-1">
+              Avg {genMetrics.data?.avgConsumptionPerHour ?? 0} L/hr
+            </p>
           </Card>
           <Card>
             <p className="text-xs text-slate-400">Diesel Consumed</p>
-            <p className="text-2xl font-bold text-slate-800">{genMetrics.data?.totalDieselLiters ?? 0} L</p>
-            <p className="text-xs text-slate-400 mt-1">Added: {genMetrics.data?.fuelAddedTotal ?? 0} L</p>
+            <p className="text-2xl font-bold text-slate-800">
+              {genMetrics.data?.totalDieselLiters ?? 0} L
+            </p>
+            <p className="text-xs text-slate-400 mt-1">
+              Added: {genMetrics.data?.fuelAddedTotal ?? 0} L
+            </p>
           </Card>
           <Card>
             <p className="text-xs text-slate-400">Total Diesel Spend</p>
-            <p className="text-2xl font-bold text-brand">{money(genMetrics.data?.totalCostMinor ?? 0)}</p>
-            <p className="text-xs text-slate-400 mt-1">{genMetrics.data?.logCount ?? 0} run sessions</p>
+            <p className="text-2xl font-bold text-slate-800">
+              {money(genMetrics.data?.totalSpendMinor ?? 0)}
+            </p>
+            <p className="text-xs text-slate-400 mt-1">
+              {money(genMetrics.data?.costPerHourMinor ?? 0)}/hr run cost
+            </p>
           </Card>
-          <Card className="border-brand/30 bg-brand/5">
-            <p className="text-xs font-semibold text-brand">Diesel CPOR</p>
-            <p className="text-2xl font-bold text-brand">{money(genMetrics.data?.dieselCporMinor ?? 0)}</p>
-            <p className="text-xs text-slate-500 mt-1">Cost / occupied room night</p>
+          <Card className="border-indigo-200 bg-indigo-50/40">
+            <p className="text-xs text-indigo-600 font-semibold">Energy CPOR Tonight</p>
+            <p className="text-2xl font-bold text-indigo-900">
+              {money(genMetrics.data?.cporMinor ?? 0)}
+            </p>
+            <p className="text-xs text-indigo-500 mt-1">
+              Cost Per Occupied Room ({genMetrics.data?.occupiedRoomsTonight ?? 0} rooms)
+            </p>
           </Card>
         </div>
 
-        {/* Log Generator Run */}
+        {/* Generator Run Log Form & History */}
         <Card>
-          <h4 className="mb-2 text-sm font-semibold text-slate-700">Log Generator Run / Fuel</h4>
-          <div className="grid gap-2 sm:grid-cols-5">
+          <h4 className="text-sm font-semibold text-slate-700 mb-3">Log Generator Operation &amp; Fuel</h4>
+          <div className="grid grid-cols-1 sm:grid-cols-5 gap-2 mb-3">
             <Input
               placeholder="Generator name"
               value={genForm.generatorName}
@@ -156,13 +224,13 @@ export function Operations() {
             />
             <Input
               type="number"
-              placeholder="Meter Start (hrs)"
+              placeholder="Start Hour Meter"
               value={genForm.runHoursStart}
               onChange={(e) => setGenForm({ ...genForm, runHoursStart: e.target.value })}
             />
             <Input
               type="number"
-              placeholder="Meter End (hrs)"
+              placeholder="End Hour Meter"
               value={genForm.runHoursEnd}
               onChange={(e) => setGenForm({ ...genForm, runHoursEnd: e.target.value })}
             />
@@ -172,74 +240,112 @@ export function Operations() {
               value={genForm.fuelAddedLiters}
               onChange={(e) => setGenForm({ ...genForm, fuelAddedLiters: e.target.value })}
             />
+            <Input
+              type="number"
+              placeholder="Consumed (Optional)"
+              value={genForm.dieselConsumedLiters}
+              onChange={(e) => setGenForm({ ...genForm, dieselConsumedLiters: e.target.value })}
+            />
+          </div>
+          <div className="flex gap-2">
+            <Input
+              placeholder="Operational notes (e.g. Utility grid blackout at 21:00)"
+              value={genForm.notes}
+              onChange={(e) => setGenForm({ ...genForm, notes: e.target.value })}
+              className="flex-1"
+            />
             <Button onClick={logGeneratorRun}>Log Run</Button>
           </div>
+
+          {/* Recent Logs Table */}
+          <div className="mt-4">
+            <p className="text-xs font-semibold text-slate-500 mb-2">Recent Run Logs</p>
+            {genLogs.isLoading ? (
+              <Empty>Loading logs…</Empty>
+            ) : (
+              <Table headers={['Generator', 'Run Hours', 'Fuel Added', 'Fuel Used', 'Total Cost', 'Time', 'Notes']}>
+                {genLogs.data?.map((l) => (
+                  <tr key={l.id}>
+                    <Td className="font-semibold">{l.generatorName}</Td>
+                    <Td>{(l.runHoursEnd - l.runHoursStart).toFixed(1)} hrs ({l.runHoursStart} → {l.runHoursEnd})</Td>
+                    <Td>{l.fuelAddedLiters > 0 ? `${l.fuelAddedLiters} L` : '—'}</Td>
+                    <Td className="font-semibold text-slate-800">{l.dieselConsumedLiters} L</Td>
+                    <Td className="font-bold text-emerald-700">{money(l.totalCostMinor)}</Td>
+                    <Td className="text-xs text-slate-400">{new Date(l.startedAt).toLocaleString()}</Td>
+                    <Td className="text-xs text-slate-500">{l.notes || '—'}</Td>
+                  </tr>
+                ))}
+                {genLogs.data?.length === 0 && (
+                  <tr>
+                    <Td colSpan={7} className="text-center py-4 text-xs text-slate-400">
+                      No generator run logs recorded yet.
+                    </Td>
+                  </tr>
+                )}
+              </Table>
+            )}
+          </div>
         </Card>
-
-        {/* Generator Run Table */}
-        {genLogs.data && genLogs.data.length > 0 && (
-          <Table headers={['Date', 'Generator', 'Hours', 'Fuel Burn', 'Est. Cost', 'Notes']}>
-            {genLogs.data.slice(0, 5).map((l) => {
-              const runHours = Math.max(0, l.runHoursEnd - l.runHoursStart);
-              return (
-                <tr key={l.id}>
-                  <Td>{new Date(l.startedAt).toLocaleDateString()}</Td>
-                  <Td>{l.generatorName}</Td>
-                  <Td>{runHours.toFixed(1)} hrs ({l.runHoursStart} → {l.runHoursEnd})</Td>
-                  <Td>{l.dieselConsumedLiters} L</Td>
-                  <Td>{money(l.totalCostMinor)}</Td>
-                  <Td>{l.notes ?? '—'}</Td>
-                </tr>
-              );
-            })}
-          </Table>
-        )}
       </div>
 
-      {/* Night Audit History */}
-      <div>
-        <h3 className="mb-2 text-sm font-semibold text-slate-600">Night Audit History</h3>
-        {runs.isLoading ? <Empty>Loading…</Empty> : (
-          <Table headers={['Business date', 'Arrivals', 'Departures', 'No-shows', 'Occ %']}>
-            {runs.data?.map((r) => (
-              <tr key={r.id}>
-                <Td>{r.businessDate?.slice(0, 10)}</Td>
-                <Td>{r.summary.arrivals}</Td>
-                <Td>{r.summary.departures}</Td>
-                <Td>{r.summary.noShows}</Td>
-                <Td>{r.summary.occupancyPct}%</Td>
-              </tr>
-            ))}
-            {runs.data?.length === 0 && <tr><Td>No closes yet.</Td></tr>}
-          </Table>
-        )}
-      </div>
-
-      {/* PM and Asset Registers */}
+      {/* ========================================================= */}
+      {/* 2. PREVENTIVE MAINTENANCE & ASSET REGISTERS */}
+      {/* ========================================================= */}
       <div className="grid gap-3 sm:grid-cols-2">
         <Card>
           <h3 className="mb-2 text-sm font-semibold text-slate-600">Preventive Maintenance Schedules</h3>
           <div className="flex flex-wrap gap-2">
-            <Input placeholder="Task (e.g. Service generator)" value={sched.title} onChange={(e) => setSched({ ...sched, title: e.target.value })} />
-            <Select value={sched.frequency} onChange={(e) => setSched({ ...sched, frequency: e.target.value })} className="w-32">
-              {['DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'].map((f) => <option key={f}>{f}</option>)}
+            <Input
+              placeholder="Task (e.g. Service generator)"
+              value={sched.title}
+              onChange={(e) => setSched({ ...sched, title: e.target.value })}
+            />
+            <Select
+              value={sched.frequency}
+              onChange={(e) => setSched({ ...sched, frequency: e.target.value })}
+              className="w-32"
+            >
+              {['DAILY', 'WEEKLY', 'MONTHLY', 'QUARTERLY', 'YEARLY'].map((f) => (
+                <option key={f}>{f}</option>
+              ))}
             </Select>
-            <Button onClick={addSchedule}>Add</Button>
+            <Button onClick={addSchedule}>Add Schedule</Button>
           </div>
-          <ul className="mt-2 space-y-1 text-sm text-slate-600">
-            {schedules.data?.map((s) => <li key={s.id} className="flex justify-between"><span>{s.title} ({s.frequency})</span><Badge tone={s.active ? 'green' : 'slate'}>next {s.nextRunAt?.slice(0, 10)}</Badge></li>)}
+          <ul className="mt-3 divide-y divide-slate-100 text-sm">
+            {schedules.data?.map((s) => (
+              <li key={s.id} className="flex items-center justify-between py-2">
+                <span>{s.title}</span>
+                <span className="text-xs text-slate-400">{s.frequency}</span>
+              </li>
+            ))}
           </ul>
         </Card>
 
         <Card>
           <h3 className="mb-2 text-sm font-semibold text-slate-600">Asset Register</h3>
           <div className="flex flex-wrap gap-2">
-            <Input placeholder="Asset name" value={asset.name} onChange={(e) => setAsset({ ...asset, name: e.target.value })} />
-            <Input placeholder="Category" value={asset.category} onChange={(e) => setAsset({ ...asset, category: e.target.value })} className="w-32" />
-            <Button onClick={addAsset}>Add</Button>
+            <Input
+              placeholder="Asset name"
+              value={asset.name}
+              onChange={(e) => setAsset({ ...asset, name: e.target.value })}
+            />
+            <Input
+              placeholder="Category (HVAC, Kitchen…)"
+              value={asset.category}
+              onChange={(e) => setAsset({ ...asset, category: e.target.value })}
+            />
+            <Button onClick={addAsset}>Add Asset</Button>
           </div>
-          <ul className="mt-2 space-y-1 text-sm text-slate-600">
-            {assets.data?.map((a) => <li key={a.id} className="flex justify-between"><span>{a.name} {a.category ? `· ${a.category}` : ''}</span><Badge tone={a.status === 'ACTIVE' ? 'green' : 'amber'}>{a.status}</Badge></li>)}
+          <ul className="mt-3 divide-y divide-slate-100 text-sm">
+            {assets.data?.map((a) => (
+              <li key={a.id} className="flex items-center justify-between py-2">
+                <div>
+                  <p className="font-medium text-slate-800">{a.name}</p>
+                  <p className="text-xs text-slate-400">{a.category || 'General'}</p>
+                </div>
+                <Badge tone={a.status === 'OPERATIONAL' ? 'green' : 'amber'}>{a.status}</Badge>
+              </li>
+            ))}
           </ul>
         </Card>
       </div>

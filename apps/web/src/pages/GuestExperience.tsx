@@ -5,6 +5,7 @@ import { PageTitle, Card, Table, Td, Button, Input, Select, Badge, Empty } from 
 
 interface Review {
   id: string;
+  source?: string;
   rating: number;
   text: string | null;
   sentiment: string | null;
@@ -48,6 +49,13 @@ export function GuestExperience() {
   const [rating, setRating] = useState('5');
   const [text, setText] = useState('');
   
+  // Reputation Manager State
+  const [syncingOta, setSyncingOta] = useState(false);
+  const [autoResponding, setAutoResponding] = useState(false);
+  const [responseTone, setResponseTone] = useState<'GRACIOUS' | 'PROFESSIONAL' | 'CONCISE'>('PROFESSIONAL');
+  const [filterSource, setFilterSource] = useState<string>('ALL');
+  const [bannerMsg, setBannerMsg] = useState<string | null>(null);
+
   // Funnel Simulator state
   const [funnelRating, setFunnelRating] = useState('5');
   const [funnelComment, setFunnelComment] = useState('');
@@ -57,6 +65,41 @@ export function GuestExperience() {
     await apiWrite('POST', '/guest-experience/reviews', { source: 'manual', rating: Number(rating), text });
     setText('');
     await qc.invalidateQueries();
+  };
+
+  const handleSyncExternal = async () => {
+    setSyncingOta(true);
+    try {
+      const res = await apiWrite<{ message: string; imported: number }>('POST', '/guest-experience/reviews/sync-external', {
+        channel: filterSource,
+      });
+      if (!res.queued) {
+        setBannerMsg(`✓ ${res.data.message}`);
+        await qc.invalidateQueries({ queryKey: ['reviews'] });
+        await qc.invalidateQueries({ queryKey: ['rev-summary'] });
+      }
+    } catch (e: any) {
+      alert('Failed to sync reviews: ' + e.message);
+    } finally {
+      setSyncingOta(false);
+    }
+  };
+
+  const handleBatchAutoRespond = async () => {
+    setAutoResponding(true);
+    try {
+      const res = await apiWrite<{ message: string; respondedCount: number }>('POST', '/guest-experience/reviews/batch-auto-respond', {
+        tone: responseTone,
+      });
+      if (!res.queued) {
+        setBannerMsg(`✓ ${res.data.message}`);
+        await qc.invalidateQueries({ queryKey: ['reviews'] });
+      }
+    } catch (e: any) {
+      alert('Failed to auto-respond: ' + e.message);
+    } finally {
+      setAutoResponding(false);
+    }
   };
 
   const draftReply = async (id: string) => {
@@ -69,15 +112,37 @@ export function GuestExperience() {
     await qc.invalidateQueries({ queryKey: ['reviews'] });
   };
 
+  const reservationsQuery = useQuery({
+    queryKey: ['reservations-for-funnel'],
+    queryFn: () => apiGet<any[]>('/reservations'),
+  });
+
   const testFunnel = async () => {
-    // Pick an active reservation or dummy UUID for test
-    const dummyReservationId = '00000000-0000-0000-0000-000000000001';
+    const realReservationId = reservationsQuery.data?.[0]?.id;
+    if (!realReservationId) {
+      // If no reservations exist yet in the database, evaluate funnel logic directly
+      const score = parseInt(funnelRating, 10);
+      if (score <= 3) {
+        setFunnelResult({
+          funneled: 'SHIELDED',
+          message: '🛡️ [Reputation Shielded] Rating ≤3 intercepted as private complaint to Duty Manager. Guest prevented from venting on Google/TripAdvisor.',
+        });
+      } else {
+        setFunnelResult({
+          funneled: 'PUBLIC_PROMOTER',
+          message: '⭐ [Review Booster] Rating ≥4 routed directly to Google Maps / TripAdvisor 5-star review page!',
+          googleReviewUrl: 'https://www.google.com/maps',
+        });
+      }
+      return;
+    }
+
     try {
       const res = await apiWrite<{ funneled: string; message: string; googleReviewUrl?: string }>(
         'POST',
         '/guest-experience/surveys',
         {
-          reservationId: dummyReservationId,
+          reservationId: realReservationId,
           score: parseInt(funnelRating, 10),
         },
       );
@@ -87,7 +152,6 @@ export function GuestExperience() {
       await qc.invalidateQueries({ queryKey: ['survey-summary'] });
       await qc.invalidateQueries({ queryKey: ['complaints'] });
     } catch {
-      // If dummy reservation fails constraint, simulate direct funnel logic
       const score = parseInt(funnelRating, 10);
       if (score <= 3) {
         setFunnelResult({
@@ -172,15 +236,92 @@ export function GuestExperience() {
         )}
       </Card>
 
+      {bannerMsg && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-xs font-semibold text-emerald-800 flex items-center justify-between">
+          <span>{bannerMsg}</span>
+          <button type="button" onClick={() => setBannerMsg(null)} className="text-emerald-700 hover:text-emerald-900">✕</button>
+        </div>
+      )}
+
+      {/* Reputation Manager AI Hub (Stayflexi Parity) */}
+      <Card className="border-indigo-200 bg-gradient-to-r from-indigo-50/40 via-purple-50/20 to-white space-y-3">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center text-white text-xl shadow-sm">
+              ✨
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-slate-900">Reputation Manager AI &amp; Public Review Auto-Responder</h3>
+                <Badge tone="purple">AI Engine</Badge>
+              </div>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Automatically aggregate public reviews from Google, TripAdvisor &amp; OTAs, then publish on-brand AI responses in one click.
+              </p>
+            </div>
+          </div>
+
+          {/* Quick Action Buttons */}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={syncingOta}
+              onClick={handleSyncExternal}
+            >
+              {syncingOta ? 'Syncing Feeds…' : '🔄 Sync Google & TripAdvisor'}
+            </Button>
+            <div className="flex items-center gap-1.5 bg-white border border-slate-200 rounded-lg p-1">
+              <Select
+                value={responseTone}
+                onChange={(e) => setResponseTone(e.target.value as any)}
+                className="text-xs py-1 border-0 bg-transparent font-medium"
+              >
+                <option value="PROFESSIONAL">👔 Professional Tone</option>
+                <option value="GRACIOUS">❤️ Warm &amp; Gracious</option>
+                <option value="CONCISE">⚡ Concise &amp; Direct</option>
+              </Select>
+              <Button
+                size="sm"
+                disabled={autoResponding}
+                onClick={handleBatchAutoRespond}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white"
+              >
+                {autoResponding ? 'Responding…' : '⚡ 1-Click AI Auto-Respond'}
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Source Filter Pills */}
+        <div className="flex items-center gap-2 pt-2 border-t border-slate-200/70 text-xs">
+          <span className="text-slate-500 font-medium">Filter by Source:</span>
+          {['ALL', 'Google Reviews', 'TripAdvisor', 'Booking.com', 'manual'].map((src) => (
+            <button
+              key={src}
+              type="button"
+              onClick={() => setFilterSource(src)}
+              className={`px-2.5 py-1 rounded-full text-xs font-semibold transition ${
+                filterSource === src
+                  ? 'bg-slate-900 text-white shadow-sm'
+                  : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+              }`}
+            >
+              {src === 'ALL' ? 'All Channels' : src === 'manual' ? 'Direct / In-House' : src}
+            </button>
+          ))}
+        </div>
+      </Card>
+
       {/* Ingest Review */}
       <Card>
-        <h3 className="mb-2 text-sm font-semibold text-slate-600">Ingest a Review</h3>
+        <h3 className="mb-2 text-sm font-semibold text-slate-600">Manually Log a Guest Review</h3>
         <div className="flex gap-2">
           <Select value={rating} onChange={(e) => setRating(e.target.value)} className="w-24">
             {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}★</option>)}
           </Select>
           <Input placeholder="Review text" value={text} onChange={(e) => setText(e.target.value)} />
-          <Button onClick={ingest}>Add</Button>
+          <Button onClick={ingest}>Add Review</Button>
         </div>
       </Card>
 
@@ -188,25 +329,56 @@ export function GuestExperience() {
       {reviews.isLoading ? (
         <Empty>Loading…</Empty>
       ) : (
-        <Table headers={['Rating', 'Sentiment', 'Text', 'Reply', 'Actions']}>
-          {reviews.data?.map((r) => (
-            <tr key={r.id}>
-              <Td>{r.rating}★</Td>
-              <Td><Badge tone={tone(r.sentiment)}>{r.sentiment ?? '—'}</Badge></Td>
-              <Td><span className="text-xs text-slate-600">{r.text}</span>{r.topics.length > 0 && <div className="mt-1 text-xs text-slate-400">{r.topics.join(', ')}</div>}</Td>
-              <Td><span className="text-xs text-slate-500">{r.replyDraft ?? '—'}</span>{r.replyStatus && r.replyStatus !== 'NONE' && <div><Badge tone={r.replyStatus === 'POSTED' ? 'green' : 'slate'}>{r.replyStatus}</Badge></div>}</Td>
-              <Td>
-                <div className="flex flex-wrap gap-1">
-                  <Button size="sm" variant="secondary" onClick={() => draftReply(r.id)}>AI reply</Button>
-                  {r.replyStatus === 'DRAFTED' && <>
-                    <Button size="sm" variant="success" onClick={() => decide(r.id, 'approve')}>Post</Button>
-                    <Button size="sm" variant="danger" onClick={() => decide(r.id, 'reject')}>Reject</Button>
-                  </>}
-                </div>
-              </Td>
-            </tr>
-          ))}
-          {reviews.data?.length === 0 && <tr><Td>No reviews yet.</Td></tr>}
+        <Table headers={['Source', 'Rating', 'Sentiment', 'Review Text & Topics', 'AI Response', 'Actions']}>
+          {reviews.data
+            ?.filter((r) => filterSource === 'ALL' || (r.source ?? 'manual').toLowerCase() === filterSource.toLowerCase())
+            .map((r) => {
+              const src = r.source ?? 'Direct';
+              const srcTone = src.includes('Google') ? 'sky' : src.includes('TripAdvisor') ? 'green' : src.includes('Booking') ? 'amber' : 'slate';
+              return (
+                <tr key={r.id}>
+                  <Td>
+                    <Badge tone={srcTone as any}>{src}</Badge>
+                  </Td>
+                  <Td className="font-bold text-amber-500">{r.rating}★</Td>
+                  <Td><Badge tone={tone(r.sentiment)}>{r.sentiment ?? '—'}</Badge></Td>
+                  <Td>
+                    <span className="text-xs text-slate-700 leading-relaxed">{r.text}</span>
+                    {r.topics.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {r.topics.map((t) => (
+                          <span key={t} className="px-1.5 py-0.5 rounded bg-slate-100 text-[10px] text-slate-600 font-mono">
+                            #{t}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </Td>
+                  <Td>
+                    <div className="text-xs text-slate-600 italic bg-slate-50 p-2 rounded border border-slate-100 max-w-sm">
+                      {r.replyDraft ? `"${r.replyDraft}"` : <span className="text-slate-400 not-italic">No reply drafted</span>}
+                    </div>
+                    {r.replyStatus && r.replyStatus !== 'NONE' && (
+                      <div className="mt-1">
+                        <Badge tone={r.replyStatus === 'POSTED' ? 'green' : 'slate'}>
+                          {r.replyStatus === 'POSTED' ? '✓ Published to Channel' : r.replyStatus}
+                        </Badge>
+                      </div>
+                    )}
+                  </Td>
+                  <Td>
+                    <div className="flex flex-wrap gap-1">
+                      <Button size="sm" variant="secondary" onClick={() => draftReply(r.id)}>Draft AI</Button>
+                      {r.replyStatus === 'DRAFTED' && <>
+                        <Button size="sm" variant="success" onClick={() => decide(r.id, 'approve')}>Publish</Button>
+                        <Button size="sm" variant="danger" onClick={() => decide(r.id, 'reject')}>Dismiss</Button>
+                      </>}
+                    </div>
+                  </Td>
+                </tr>
+              );
+            })}
+          {reviews.data?.length === 0 && <tr><Td colSpan={6}>No reviews yet. Use the Sync button above to import Google &amp; TripAdvisor reviews.</Td></tr>}
         </Table>
       )}
 

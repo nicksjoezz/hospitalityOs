@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiWrite } from '../lib/api';
+import { useAuth } from '../lib/auth';
 import { PageTitle, Card, Table, Td, Button, Input, Select, Badge, Empty } from '../components/ui';
 
 interface Conn {
@@ -17,6 +18,7 @@ interface RoomType {
 }
 
 export function Channels() {
+  const { user, hotel } = useAuth();
   const qc = useQueryClient();
   const conns = useQuery({ queryKey: ['channels'], queryFn: () => apiGet<Conn[]>('/channel-manager/connections') });
   const roomTypes = useQuery({
@@ -29,6 +31,7 @@ export function Channels() {
 
   const [form, setForm] = useState({ channel: 'BOOKING_COM', name: '' });
   const [msg, setMsg] = useState<string | null>(null);
+  const [previewXml, setPreviewXml] = useState<string | null>(null);
 
   // iCal Sync States
   const [exportRoomTypeId, setExportRoomTypeId] = useState<string>('');
@@ -223,6 +226,149 @@ export function Channels() {
           </form>
         </Card>
       </div>
+
+      {/* Google Hotel Center & Free Booking Links */}
+      <Card className="border-amber-200 bg-gradient-to-r from-amber-50/40 via-orange-50/20 to-white space-y-4">
+        <div className="flex items-start justify-between">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-amber-500 to-orange-400 flex items-center justify-center text-white text-xl shadow-sm">
+              🌐
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-bold text-slate-900">Google Hotel Center &amp; Free Booking Links</h3>
+                <Badge tone="green">ARI Active</Badge>
+                <Badge tone="sky">Metasearch</Badge>
+              </div>
+              <p className="text-xs text-slate-600 mt-1 max-w-2xl leading-relaxed">
+                Connect your direct booking engine to Google Search and Google Maps without paying commission. Google crawls these standardized ARI XML feeds to display your live room rates, availability, and direct booking links.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-amber-200/60">
+          {/* Feed 1: Hotel Listings XML */}
+          <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800">1. Hotel Listings Feed (Metadata XML)</span>
+              <Badge tone="amber">listings.xml</Badge>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Submit this URL to Google Hotel Center Partner portal to index your property profile and currency.
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 rounded-lg bg-slate-50 p-2 text-[11px] text-slate-700 font-mono truncate border border-slate-200">
+                {`${window.location.origin}/api/v1/channel-manager/google/hotels.xml?hotelId=${user?.hotelId || ''}`}
+              </code>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  const url = `${window.location.origin}/api/v1/channel-manager/google/hotels.xml?hotelId=${user?.hotelId || ''}`;
+                  void navigator.clipboard?.writeText(url);
+                  alert('Copied Hotel Listings XML URL!');
+                }}
+              >
+                Copy
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`/api/v1/channel-manager/google/hotels.xml?hotelId=${user?.hotelId || ''}`);
+                    const text = await res.text();
+                    setPreviewXml(text);
+                  } catch (e: any) {
+                    alert('Error fetching feed: ' + e.message);
+                  }
+                }}
+              >
+                Inspect
+              </Button>
+            </div>
+          </div>
+
+          {/* Feed 2: Live ARI Transaction Feed */}
+          <div className="rounded-xl border border-slate-200 bg-white p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-slate-800">2. ARI Rates &amp; Inventory Feed (Transaction XML)</span>
+              <Badge tone="green">Real-Time ARI</Badge>
+            </div>
+            <p className="text-[11px] text-slate-500">
+              Google queries this feed for live room availability, dynamic rate plans, and pricing charges.
+            </p>
+            <div className="flex items-center gap-2">
+              <code className="flex-1 rounded-lg bg-slate-50 p-2 text-[11px] text-slate-700 font-mono truncate border border-slate-200">
+                {`${window.location.origin}/api/v1/channel-manager/google/ari.xml?hotelId=${user?.hotelId || ''}`}
+              </code>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => {
+                  const url = `${window.location.origin}/api/v1/channel-manager/google/ari.xml?hotelId=${user?.hotelId || ''}`;
+                  void navigator.clipboard?.writeText(url);
+                  alert('Copied ARI Transaction XML URL!');
+                }}
+              >
+                Copy
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={async () => {
+                  try {
+                    const res = await fetch(`/api/v1/channel-manager/google/ari.xml?hotelId=${user?.hotelId || ''}`);
+                    const text = await res.text();
+                    setPreviewXml(text);
+                  } catch (e: any) {
+                    alert('Error fetching ARI feed: ' + e.message);
+                  }
+                }}
+              >
+                Inspect
+              </Button>
+            </div>
+          </div>
+        </div>
+
+        {/* Free Booking Links Direct Landing Page URL */}
+        <div className="rounded-xl border border-amber-200 bg-amber-50/60 p-3 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs">
+          <div>
+            <span className="font-bold text-slate-800">Google Free Booking Links Deep Redirect URL:</span>
+            <div className="font-mono text-[11px] text-slate-600 mt-0.5 select-all">
+              {`${window.location.origin}/book-room?hotelId=${user?.hotelId || ''}&utm_source=google_hotel_center&utm_medium=free_booking_links`}
+            </div>
+          </div>
+          <a
+            href={`/book-room?hotelId=${user?.hotelId || ''}&utm_source=google_hotel_center&utm_medium=free_booking_links`}
+            target="_blank"
+            rel="noreferrer"
+            className="text-amber-800 hover:text-amber-900 font-semibold underline underline-offset-2 flex-shrink-0"
+          >
+            Test Google Booking Landing Page →
+          </a>
+        </div>
+
+        {previewXml && (
+          <div className="rounded-xl border border-slate-300 bg-slate-900 p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-mono font-bold text-amber-400">Live Google XML Feed Output Preview</span>
+              <button
+                type="button"
+                onClick={() => setPreviewXml(null)}
+                className="text-xs text-slate-400 hover:text-white"
+              >
+                Close ✕
+              </button>
+            </div>
+            <pre className="max-h-56 overflow-auto text-[11px] font-mono text-emerald-300 p-2 bg-black/40 rounded">
+              {previewXml}
+            </pre>
+          </div>
+        )}
+      </Card>
 
       {/* Enterprise Certified API Connections */}
       <Card>
