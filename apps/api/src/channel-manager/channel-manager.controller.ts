@@ -6,6 +6,7 @@ import {
   Headers,
   Param,
   Post,
+  Query,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -106,5 +107,29 @@ export class ChannelManagerController {
       ? (upper as ChannelType)
       : ChannelType.GENERIC;
     return this.channels.ingestReservation(dto.hotelId, ch, dto);
+  }
+
+  /**
+   * Google Hotel Center - Listings XML Feed
+   */
+  @Public()
+  @Get('google/hotels.xml')
+  @Header('Content-Type', 'application/xml; charset=utf-8')
+  getGoogleHotelsXml(@Query('hotelId') hotelId: string): Promise<string> {
+    return this.channels.exportGoogleHotelsXml(hotelId);
+  }
+
+  /**
+   * Google Hotel Center - Availability, Rates, and Inventory (ARI) Transaction Feed
+   */
+  @Public()
+  @Get('google/ari.xml')
+  @Header('Content-Type', 'application/xml; charset=utf-8')
+  getGoogleAriXml(
+    @Query('hotelId') hotelId: string,
+    @Query('days') days?: string,
+  ): Promise<string> {
+    const numDays = days ? parseInt(days, 10) : 14;
+    return this.channels.exportGoogleAriXml(hotelId, isNaN(numDays) ? 14 : numDays);
   }
 }

@@ -62,4 +62,65 @@ export class BillingController {
     const pdf = await this.billing.invoicePdf(user.hotelId, id);
     res.header('Content-Type', 'application/pdf').header('Content-Disposition', `attachment; filename="invoice-${id}.pdf"`).send(pdf);
   }
+
+  @Post('companies/:id/payments')
+  recordPayment(
+    @CurrentActor() actor: Actor,
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(z.object({ amount: z.number().int().positive(), note: z.string().optional() })))
+    dto: { amount: number; note?: string },
+  ) {
+    return this.billing.recordCompanyPayment(actor, id, dto.amount, dto.note);
+  }
+
+  @Get('companies/:id/statement')
+  getStatement(@CurrentUser() user: AuthUser, @Param('id') id: string) {
+    return this.billing.getCompanyStatement(user.hotelId, id);
+  }
+
+  // ---- ERP & Accounting Exports (QuickBooks / Xero / Tally) ----
+  @Get('erp/gl')
+  getDailyGl(@CurrentUser() user: AuthUser, @Query('date') date?: string) {
+    return this.billing.generateDailyGl(user.hotelId, date);
+  }
+
+  @Get('erp/quickbooks.csv')
+  async exportQuickbooks(
+    @CurrentUser() user: AuthUser,
+    @Query('date') date: string | undefined,
+    @Res() res: Response,
+  ) {
+    const csv = await this.billing.exportQuickbooksCsv(user.hotelId, date);
+    res
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="quickbooks-journal-${date || 'today'}.csv"`)
+      .send(csv);
+  }
+
+  @Get('erp/xero.csv')
+  async exportXero(
+    @CurrentUser() user: AuthUser,
+    @Query('date') date: string | undefined,
+    @Res() res: Response,
+  ) {
+    const csv = await this.billing.exportXeroCsv(user.hotelId, date);
+    res
+      .header('Content-Type', 'text/csv; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="xero-journal-${date || 'today'}.csv"`)
+      .send(csv);
+  }
+
+  @Get('erp/tally.xml')
+  async exportTally(
+    @CurrentUser() user: AuthUser,
+    @Query('date') date: string | undefined,
+    @Res() res: Response,
+  ) {
+    const xml = await this.billing.exportTallyXml(user.hotelId, date);
+    res
+      .header('Content-Type', 'application/xml; charset=utf-8')
+      .header('Content-Disposition', `attachment; filename="tally-journal-${date || 'today'}.xml"`)
+      .send(xml);
+  }
 }
+

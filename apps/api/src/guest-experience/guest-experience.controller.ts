@@ -87,6 +87,24 @@ export class GuestExperienceController {
     return this.reviews.decideReply(actor, id, decision === 'approve' ? 'approve' : 'reject');
   }
 
+  @Roles(Role.OWNER, Role.MANAGER)
+  @Post('reviews/sync-external')
+  syncExternalReviews(
+    @CurrentActor() actor: Actor,
+    @Body() body: { channel?: string },
+  ) {
+    return this.reviews.syncExternalReviews(actor, body?.channel);
+  }
+
+  @Roles(Role.OWNER, Role.MANAGER)
+  @Post('reviews/batch-auto-respond')
+  batchAutoRespond(
+    @CurrentActor() actor: Actor,
+    @Body() body: { tone?: 'GRACIOUS' | 'PROFESSIONAL' | 'CONCISE' },
+  ) {
+    return this.reviews.batchAutoRespond(actor, body?.tone);
+  }
+
   // ---- Surveys ----
   @Post('surveys')
   submitSurvey(

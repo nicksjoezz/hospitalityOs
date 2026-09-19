@@ -244,4 +244,97 @@ export class ChannelManagerService {
       message: `Successfully synchronized ${importedCount} reservation(s) from ${input.channelName || 'iCal'}!`,
     };
   }
+
+  /**
+   * Google Hotel Center - Listings XML Feed
+   * Outputs standard Google Hotel Center hotel definition XML for free booking links & ads.
+   */
+  async exportGoogleHotelsXml(hotelId: string): Promise<string> {
+    const hotel = await this.prisma.hotel.findUnique({ where: { id: hotelId } });
+    if (!hotel) throw new NotFoundException('Hotel not found');
+
+    const escapeXml = (str: string) =>
+      str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<listings>
+  <listing>
+    <id>${escapeXml(hotel.id)}</id>
+    <name>${escapeXml(hotel.name)}</name>
+    <address format="simple">${escapeXml(hotel.name)}, HospitalityOS</address>
+    <phone>${escapeXml(hotel.phone ?? '+1234567890')}</phone>
+    <country>NG</country>
+    <currency>${escapeXml(hotel.currency)}</currency>
+  </listing>
+</listings>`;
+  }
+
+  /**
+   * Google Hotel Center - Availability, Rates, and Inventory (ARI) Transaction Feed
+   * Standard Google Transaction XML syntax consumed by Google Hotel Ads and Free Booking Links.
+   */
+  async exportGoogleAriXml(hotelId: string, days = 14): Promise<string> {
+    const hotel = await this.prisma.hotel.findUnique({ where: { id: hotelId } });
+    if (!hotel) throw new NotFoundException('Hotel not found');
+
+    const roomTypes = await this.prisma.roomType.findMany({ where: { hotelId } });
+    const escapeXml = (str: string) =>
+      str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    const start = new Date();
+    start.setUTCHours(0, 0, 0, 0);
+
+    let roomDataXml = '';
+    let packageDataXml = '';
+
+    for (const rt of roomTypes) {
+      const totalRooms = await this.prisma.room.count({
+        where: { hotelId, roomTypeId: rt.id, deletedAt: null },
+      });
+
+      roomDataXml += `
+      <room room_type_id="${escapeXml(rt.id)}">
+        <name>${escapeXml(rt.name)}</name>
+        <capacity>${rt.capacity}</capacity>
+      </room>`;
+
+      for (let i = 0; i < days; i++) {
+        const d = new Date(start.getTime() + i * DAY);
+        const next = new Date(d.getTime() + DAY);
+        const booked = await this.prisma.reservation.count({
+          where: {
+            hotelId,
+            roomTypeId: rt.id,
+            status: { in: BLOCKING_RESERVATION_STATUSES as never },
+            checkInDate: { lt: next },
+            checkOutDate: { gt: d },
+          },
+        });
+        const quote = await this.pricing.quote(hotelId, rt.id, d, next);
+        const available = Math.max(0, totalRooms - booked);
+        const dateStr = d.toISOString().slice(0, 10);
+
+        packageDataXml += `
+      <package rate_plan_id="STD_${escapeXml(rt.id)}">
+        <room_type_id>${escapeXml(rt.id)}</room_type_id>
+        <date>${dateStr}</date>
+        <availability>${available}</availability>
+        <charge type="room" currency="${escapeXml(hotel.currency)}">
+          <amount>${(quote.total / 100).toFixed(2)}</amount>
+        </charge>
+      </package>`;
+      }
+    }
+
+    const timestamp = new Date().toISOString();
+    return `<?xml version="1.0" encoding="UTF-8"?>
+<transaction timestamp="${timestamp}" id="HOS_ARI_${Date.now()}">
+  <propertyDataSet property="${escapeXml(hotel.id)}">
+    <roomData>${roomDataXml}
+    </roomData>
+    <packageData>${packageDataXml}
+    </packageData>
+  </propertyDataSet>
+</transaction>`;
+  }
 }
