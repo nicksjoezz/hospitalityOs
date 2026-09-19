@@ -49,6 +49,17 @@ export class RatesController {
     return this.rates.listPlans(user.hotelId, roomTypeId);
   }
 
+  @Get('matrix')
+  matrix(
+    @CurrentUser() user: AuthUser,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const f = from ? new Date(from) : new Date();
+    const t = to ? new Date(to) : new Date(Date.now() + 14 * 86_400_000);
+    return this.rates.getMatrix(user.hotelId, f, t);
+  }
+
   @Get('calendar')
   calendar(
     @CurrentUser() user: AuthUser,

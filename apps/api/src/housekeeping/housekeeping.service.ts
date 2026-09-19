@@ -174,12 +174,31 @@ export class HousekeepingService {
   }
 
   /** Cleaner finishes → task AWAITING_INSPECTION, room INSPECTION. */
-  async complete(actor: Actor, taskId: string) {
+  async complete(
+    actor: Actor,
+    taskId: string,
+    input?: { note?: string; photoProof?: string; checklist?: string[] },
+  ) {
+    const existing = await this.prisma.housekeepingTask.findFirst({
+      where: { id: taskId, hotelId: actor.hotelId },
+    });
+    if (!existing) throw new NotFoundException('Task not found');
+
+    const meta = {
+      note: input?.note ?? existing.note,
+      photoProof: input?.photoProof,
+      checklist: input?.checklist,
+      completedAt: new Date().toISOString(),
+    };
+
     return this.transition(actor, taskId, {
       status: HkStatus.AWAITING_INSPECTION,
       roomStatus: RoomStatus.INSPECTION,
-      data: { completedAt: new Date() },
-      action: 'housekeeping.completed',
+      data: {
+        completedAt: new Date(),
+        note: JSON.stringify(meta),
+      },
+      action: 'housekeeping.completed_with_proof',
     });
   }
 

@@ -81,6 +81,99 @@ export class NightAuditService {
     return { businessDate: dayStart.toISOString().slice(0, 10), nextBusinessDate: nextBusinessDate.toISOString().slice(0, 10), summary, runId: run.id };
   }
 
+  async getPreAuditChecklist(hotelId: string) {
+    const hotel = await this.prisma.hotel.findUniqueOrThrow({ where: { id: hotelId } });
+    const businessDate = hotel.businessDate ?? startOfDay(new Date());
+    const dayStart = startOfDay(businessDate);
+    const dayEnd = new Date(dayStart.getTime() + DAY);
+
+    const [pendingArrivals, pendingDepartures, openOrders, inHouseGuests, activeGenerators] = await Promise.all([
+      this.prisma.reservation.findMany({
+        where: {
+          hotelId,
+          status: ReservationStatus.CONFIRMED,
+          checkInDate: { lt: dayEnd },
+        },
+        include: { guest: true, room: true },
+        take: 10,
+      }),
+      this.prisma.reservation.findMany({
+        where: {
+          hotelId,
+          status: ReservationStatus.CHECKED_IN,
+          checkOutDate: { lt: dayEnd },
+        },
+        include: { guest: true, room: true },
+        take: 10,
+      }),
+      this.prisma.order.findMany({
+        where: {
+          hotelId,
+          status: 'OPEN',
+        },
+        take: 10,
+      }),
+      this.prisma.reservation.count({
+        where: { hotelId, status: ReservationStatus.CHECKED_IN },
+      }),
+      this.prisma.generatorLog.count({
+        where: {
+          hotelId,
+          startedAt: { gte: dayStart, lt: dayEnd },
+        },
+      }),
+    ]);
+
+    const pendingCheckoutsList = pendingDepartures.map((r) => ({
+      id: r.id,
+      guestName: r.guest?.name ?? 'Unknown',
+      roomNumber: r.room?.roomNumber ?? 'Unassigned',
+      checkOutDate: r.checkOutDate.toISOString().slice(0, 10),
+      balance: 0,
+    }));
+
+    const pendingCheckinsList = pendingArrivals.map((r) => ({
+      id: r.id,
+      guestName: r.guest?.name ?? 'Unknown',
+      roomType: r.room?.roomNumber ? `Room ${r.room.roomNumber}` : 'Standard',
+      checkInDate: r.checkInDate.toISOString().slice(0, 10),
+    }));
+
+    const isReady = pendingArrivals.length === 0 && pendingDepartures.length === 0 && openOrders.length === 0;
+
+    return {
+      businessDate: dayStart.toISOString().slice(0, 10),
+      nextBusinessDate: new Date(dayStart.getTime() + DAY).toISOString().slice(0, 10),
+      inHouseGuests,
+      pendingArrivals: {
+        count: pendingArrivals.length,
+        items: pendingCheckinsList,
+      },
+      pendingDepartures: {
+        count: pendingDepartures.length,
+        items: pendingCheckoutsList,
+      },
+      pendingCheckouts: pendingCheckoutsList,
+      pendingCheckins: pendingCheckinsList,
+      openOrders: {
+        count: openOrders.length,
+        total: openOrders.reduce((s, o) => s + o.total, 0),
+        items: openOrders.map((o) => ({
+          id: o.id,
+          tableNo: o.tableNo,
+          outlet: o.outlet,
+          total: o.total,
+        })),
+      },
+      openOrdersCount: openOrders.length,
+      unpostedChargesCount: openOrders.length,
+      openCashDrawersCount: 0,
+      generatorLogsToday: activeGenerators,
+      readyToRun: isReady,
+      readyToRoll: isReady,
+    };
+  }
+
   listRuns(hotelId: string) {
     return this.prisma.nightAuditRun.findMany({ where: { hotelId }, orderBy: { runAt: 'desc' }, take: 90 });
   }

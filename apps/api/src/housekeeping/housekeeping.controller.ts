@@ -48,8 +48,12 @@ export class HousekeepingController {
 
   @Roles(Role.MANAGER, Role.HOUSEKEEPING)
   @Post('tasks/:id/complete')
-  complete(@CurrentActor() actor: Actor, @Param('id') id: string) {
-    return this.housekeeping.complete(actor, id);
+  complete(
+    @CurrentActor() actor: Actor,
+    @Param('id') id: string,
+    @Body() body?: { note?: string; photoProof?: string; checklist?: string[] },
+  ) {
+    return this.housekeeping.complete(actor, id, body);
   }
 
   @Roles(Role.MANAGER, Role.HOUSEKEEPING)

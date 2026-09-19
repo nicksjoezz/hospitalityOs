@@ -4,10 +4,15 @@ import { CurrentActor, CurrentUser, Roles, AuthUser } from '../common/decorators
 import { Actor } from '../common/actor';
 import { NightAuditService } from './night-audit.service';
 
-@Roles(Role.OWNER, Role.MANAGER, Role.ACCOUNTANT)
+@Roles(Role.OWNER, Role.MANAGER, Role.ACCOUNTANT, Role.FRONT_DESK)
 @Controller('night-audit')
 export class NightAuditController {
   constructor(private readonly nightAudit: NightAuditService) {}
+
+  @Get('pre-check')
+  preCheck(@CurrentUser() user: AuthUser) {
+    return this.nightAudit.getPreAuditChecklist(user.hotelId);
+  }
 
   @Post('run')
   run(@CurrentActor() actor: Actor) {
@@ -19,3 +24,4 @@ export class NightAuditController {
     return this.nightAudit.listRuns(user.hotelId);
   }
 }
+

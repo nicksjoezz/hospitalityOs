@@ -17,6 +17,7 @@ import {
   LineType,
   ModifyReservationDto,
   QuoteDto,
+  ReservationSource,
   ReservationStatus,
 } from '@hospitalityos/shared';
 import { PrismaService } from '../prisma/prisma.service';
@@ -361,8 +362,8 @@ export class ReservationsService {
   async rack(hotelId: string, from: Date, to: Date) {
     const rooms = await this.prisma.room.findMany({
       where: { hotelId, deletedAt: null },
-      include: { roomType: { select: { name: true } } },
-      orderBy: { roomNumber: 'asc' },
+      include: { roomType: { select: { id: true, name: true } } },
+      orderBy: [{ floor: 'asc' }, { roomNumber: 'asc' }],
     });
     const reservations = await this.prisma.reservation.findMany({
       where: {
@@ -371,9 +372,32 @@ export class ReservationsService {
         status: { in: ['HELD', 'CONFIRMED', 'CHECKED_IN', 'CHECKED_OUT'] },
         checkInDate: { lt: to },
         checkOutDate: { gt: from },
+        deletedAt: null,
       },
-      include: { guest: { select: { name: true } } },
+      include: {
+        guest: { select: { id: true, name: true, phone: true, email: true } },
+        folio: { select: { id: true, totalCharges: true, totalPaid: true, balance: true, currency: true } },
+        roomType: { select: { id: true, name: true } },
+      },
     });
+
+    const unassigned = await this.prisma.reservation.findMany({
+      where: {
+        hotelId,
+        roomId: null,
+        status: { in: ['HELD', 'CONFIRMED'] },
+        checkInDate: { lt: to },
+        checkOutDate: { gt: from },
+        deletedAt: null,
+      },
+      include: {
+        guest: { select: { id: true, name: true, phone: true, email: true } },
+        folio: { select: { id: true, totalCharges: true, totalPaid: true, balance: true, currency: true } },
+        roomType: { select: { id: true, name: true } },
+      },
+      orderBy: { checkInDate: 'asc' },
+    });
+
     const byRoom = new Map<string, typeof reservations>();
     for (const r of reservations) {
       const arr = byRoom.get(r.roomId!) ?? [];
@@ -386,25 +410,102 @@ export class ReservationsService {
       rooms: rooms.map((room) => ({
         id: room.id,
         roomNumber: room.roomNumber,
+        floor: room.floor,
         type: room.roomType.name,
+        roomTypeId: room.roomTypeId,
         status: room.status,
         bookings: (byRoom.get(room.id) ?? []).map((r) => ({
           id: r.id,
           guest: r.guest.name,
+          phone: r.guest.phone,
+          email: r.guest.email,
           checkIn: r.checkInDate.toISOString().slice(0, 10),
           checkOut: r.checkOutDate.toISOString().slice(0, 10),
           status: r.status,
+          source: r.source,
+          quotedPrice: r.quotedPrice,
+          currency: r.currency,
+          adults: r.adults,
+          folio: r.folio,
+          specialRequests: r.specialRequests,
         })),
+      })),
+      unassigned: unassigned.map((r) => ({
+        id: r.id,
+        guest: r.guest.name,
+        phone: r.guest.phone,
+        email: r.guest.email,
+        checkIn: r.checkInDate.toISOString().slice(0, 10),
+        checkOut: r.checkOutDate.toISOString().slice(0, 10),
+        status: r.status,
+        source: r.source,
+        roomType: r.roomType.name,
+        roomTypeId: r.roomTypeId,
+        quotedPrice: r.quotedPrice,
+        currency: r.currency,
+        folio: r.folio,
       })),
     };
   }
 
-  async list(hotelId: string, status?: ReservationStatus) {
+  async list(
+    hotelId: string,
+    filters?: { status?: ReservationStatus; scope?: string; search?: string },
+  ) {
+    const where: any = { hotelId, deletedAt: null };
+
+    if (filters?.status) {
+      where.status = filters.status;
+    }
+
+    const now = new Date();
+
+    if (filters?.scope === 'past') {
+      where.OR = [
+        { status: { in: [ReservationStatus.CHECKED_OUT, ReservationStatus.CANCELLED, ReservationStatus.NO_SHOW] } },
+        { checkOutDate: { lt: now } },
+      ];
+    } else if (filters?.scope === 'active') {
+      where.status = ReservationStatus.CHECKED_IN;
+    } else if (filters?.scope === 'upcoming') {
+      where.status = { in: [ReservationStatus.CONFIRMED, ReservationStatus.HELD] };
+      where.checkInDate = { gte: now };
+    }
+
+    if (filters?.search) {
+      const q = filters.search.trim();
+      const searchConditions = [
+        { guest: { name: { contains: q, mode: 'insensitive' } } },
+        { guest: { phone: { contains: q, mode: 'insensitive' } } },
+        { room: { roomNumber: { contains: q, mode: 'insensitive' } } },
+        { id: { contains: q, mode: 'insensitive' } },
+      ];
+      if (where.OR) {
+        where.AND = [{ OR: where.OR }, { OR: searchConditions }];
+        delete where.OR;
+      } else {
+        where.OR = searchConditions;
+      }
+    }
+
     return this.prisma.reservation.findMany({
-      where: { hotelId, ...(status ? { status } : {}), deletedAt: null },
-      include: { guest: true, room: true, roomType: true },
-      orderBy: { checkInDate: 'asc' },
-      take: 200,
+      where,
+      include: {
+        guest: true,
+        room: true,
+        roomType: true,
+        folio: {
+          select: {
+            id: true,
+            balance: true,
+            totalPaid: true,
+            totalCharges: true,
+            currency: true,
+          },
+        },
+      },
+      orderBy: { checkInDate: filters?.scope === 'past' ? 'desc' : 'asc' },
+      take: 300,
     });
   }
 
@@ -592,5 +693,143 @@ export class ReservationsService {
     }
     if (released > 0) this.logger.log(`Auto-released ${released} expired hold(s)`);
     return released;
+  }
+
+  /**
+   * Multi-Property Chain CRS - List Sister Hotels / Properties
+   */
+  async getChainProperties(currentHotelId: string) {
+    const hotels = await this.prisma.hotel.findMany({
+      where: { status: { in: ['ACTIVE', 'TRIAL'] as any } },
+      select: {
+        id: true,
+        name: true,
+        slug: true,
+        address: true,
+        phone: true,
+        currency: true,
+        _count: { select: { rooms: { where: { deletedAt: null } } } },
+      },
+    });
+
+    return hotels.map((h) => ({
+      id: h.id,
+      name: h.name,
+      slug: h.slug,
+      address: h.address ?? 'HospitalityOS Cluster',
+      phone: h.phone,
+      currency: h.currency,
+      totalRooms: h._count.rooms,
+      isCurrent: h.id === currentHotelId,
+    }));
+  }
+
+  /**
+   * Multi-Property Chain CRS - Real-Time Cross-Property Availability & Rate Search
+   */
+  async checkChainAvailability(input: {
+    currentHotelId: string;
+    checkIn: Date;
+    checkOut: Date;
+    adults?: number;
+  }) {
+    const hotels = await this.prisma.hotel.findMany({
+      where: { status: { in: ['ACTIVE', 'TRIAL'] as any } },
+      include: {
+        roomTypes: true,
+      },
+    });
+
+    const results = [];
+    for (const h of hotels) {
+      const roomTypeAvailability = [];
+
+      for (const rt of h.roomTypes) {
+        const totalRooms = await this.prisma.room.count({
+          where: { hotelId: h.id, roomTypeId: rt.id, deletedAt: null },
+        });
+
+        const bookedRooms = await this.prisma.reservation.count({
+          where: {
+            hotelId: h.id,
+            roomTypeId: rt.id,
+            status: { in: BLOCKING_RESERVATION_STATUSES as never },
+            checkInDate: { lt: input.checkOut },
+            checkOutDate: { gt: input.checkIn },
+          },
+        });
+
+        const available = Math.max(0, totalRooms - bookedRooms);
+        if (available > 0) {
+          const priced = await this.pricing.quote(
+            h.id,
+            rt.id,
+            input.checkIn,
+            input.checkOut,
+          );
+
+          roomTypeAvailability.push({
+            roomTypeId: rt.id,
+            name: rt.name,
+            capacity: rt.capacity,
+            availableRooms: available,
+            totalQuote: priced.total,
+            currency: h.currency,
+          });
+        }
+      }
+
+      results.push({
+        hotelId: h.id,
+        hotelName: h.name,
+        address: h.address ?? 'HospitalityOS Network',
+        currency: h.currency,
+        isCurrent: h.id === input.currentHotelId,
+        availableRoomTypes: roomTypeAvailability,
+      });
+    }
+
+    return results;
+  }
+
+  /**
+   * Multi-Property Chain CRS - Book into Sister Property
+   */
+  async bookSisterProperty(
+    actor: Actor,
+    input: {
+      targetHotelId: string;
+      roomTypeId: string;
+      checkIn: Date;
+      checkOut: Date;
+      guest: { name: string; phone: string; email?: string };
+      adults?: number;
+      specialRequests?: string;
+    },
+  ) {
+    const originHotel = await this.prisma.hotel.findUnique({
+      where: { id: actor.hotelId },
+      select: { name: true },
+    });
+
+    const targetActor: Actor = {
+      ...actor,
+      hotelId: input.targetHotelId,
+    };
+
+    const crossRequest = `[Chain CRS Transfer from ${originHotel?.name ?? 'Sister Property'}] ${
+      input.specialRequests ?? ''
+    }`.trim();
+
+    return this.create(targetActor, {
+      guest: input.guest,
+      roomTypeId: input.roomTypeId,
+      checkIn: input.checkIn,
+      checkOut: input.checkOut,
+      adults: input.adults ?? 1,
+      children: 0,
+      source: ReservationSource.WALK_IN,
+      specialRequests: crossRequest,
+    });
   }
 }

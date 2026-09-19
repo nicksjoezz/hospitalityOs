@@ -31,6 +31,168 @@ export class ReportsService {
     });
   }
 
+  // ---- Master Report (Stayflexi Parity Booking Ledger) ----
+  async masterReport(
+    hotelId: string,
+    filter: {
+      from?: Date;
+      to?: Date;
+      dateType?: string;
+      status?: string;
+      source?: string;
+      search?: string;
+    },
+  ) {
+    const where: any = { hotelId, deletedAt: null };
+    const dType = filter.dateType || 'checkOut';
+
+    if (filter.from && filter.to) {
+      if (dType === 'checkIn') {
+        where.checkInDate = { gte: filter.from, lte: filter.to };
+      } else if (dType === 'bookingDate') {
+        where.createdAt = { gte: filter.from, lte: filter.to };
+      } else if (dType === 'stayDate') {
+        where.checkInDate = { lte: filter.to };
+        where.checkOutDate = { gte: filter.from };
+      } else {
+        // default checkout date
+        where.checkOutDate = { gte: filter.from, lte: filter.to };
+      }
+    }
+
+    if (filter.status && filter.status !== 'ALL') {
+      where.status = filter.status;
+    }
+    if (filter.source && filter.source !== 'ALL') {
+      where.source = filter.source;
+    }
+
+    if (filter.search?.trim()) {
+      const q = filter.search.trim();
+      where.OR = [
+        { guest: { name: { contains: q, mode: 'insensitive' } } },
+        { guest: { phone: { contains: q, mode: 'insensitive' } } },
+        { guest: { email: { contains: q, mode: 'insensitive' } } },
+        { room: { roomNumber: { contains: q, mode: 'insensitive' } } },
+        { id: { contains: q, mode: 'insensitive' } },
+      ];
+    }
+
+    const reservations = await this.prisma.reservation.findMany({
+      where,
+      include: {
+        guest: true,
+        room: true,
+        roomType: true,
+        folio: {
+          include: {
+            payments: {
+              orderBy: { at: 'desc' },
+              take: 1,
+            },
+          },
+        },
+      },
+      orderBy: { checkInDate: 'desc' },
+      take: 1000,
+    });
+
+    const rows = reservations.map((r) => {
+      const shortId = (parseInt(r.id.replace(/-/g, '').slice(0, 6), 16) % 90000 + 10000).toString();
+      const stayNights = Math.max(1, Math.round((r.checkOutDate.getTime() - r.checkInDate.getTime()) / 86400000));
+      const latestPayment = r.folio?.payments?.[0];
+      const paid = r.folio?.totalPaid ?? 0;
+      const charges = r.folio?.totalCharges ?? r.quotedPrice;
+      const balance = r.folio?.balance ?? Math.max(0, charges - paid);
+
+      return {
+        id: r.id,
+        bookingId: shortId,
+        roomNumber: r.room?.roomNumber ?? 'Unassigned',
+        roomType: r.roomType?.name ?? 'Standard',
+        bookingDate: r.createdAt.toISOString().slice(0, 10),
+        checkInDate: r.checkInDate.toISOString().slice(0, 10),
+        checkOutDate: r.checkOutDate.toISOString().slice(0, 10),
+        nights: stayNights,
+        source: r.source,
+        status: r.status,
+        guest: r.guest?.name ?? 'Unknown',
+        guestPhone: r.guest?.phone ?? '',
+        guestEmail: r.guest?.email ?? '',
+        adults: r.adults || 1,
+        children: r.children || 0,
+        roomsCount: 1,
+        quotedPrice: r.quotedPrice,
+        totalCharges: charges,
+        totalPaid: paid,
+        balance,
+        currency: r.currency,
+        ratePlan: r.ratePlanId ? 'Special Package' : 'Standard Rate',
+        paymentMethod: latestPayment?.method ?? (paid > 0 ? 'CARD' : 'PENDING'),
+        paymentStatus: paid >= charges && charges > 0 ? 'PAID' : paid > 0 ? 'PARTIAL' : 'UNPAID',
+      };
+    });
+
+    const totals = {
+      totalBookings: rows.length,
+      totalAdults: rows.reduce((s, r) => s + r.adults, 0),
+      totalChildren: rows.reduce((s, r) => s + r.children, 0),
+      totalRooms: rows.reduce((s, r) => s + r.roomsCount, 0),
+      totalQuoted: rows.reduce((s, r) => s + r.quotedPrice, 0),
+      totalPaid: rows.reduce((s, r) => s + r.totalPaid, 0),
+      totalBalance: rows.reduce((s, r) => s + r.balance, 0),
+    };
+
+    return {
+      generatedAt: new Date().toISOString(),
+      dateType: dType,
+      range: {
+        from: filter.from?.toISOString() ?? null,
+        to: filter.to?.toISOString() ?? null,
+      },
+      totals,
+      rows,
+    };
+  }
+
+  async masterReportCsv(
+    hotelId: string,
+    filter: {
+      from?: Date;
+      to?: Date;
+      dateType?: string;
+      status?: string;
+      source?: string;
+      search?: string;
+    },
+  ): Promise<string> {
+    const report = await this.masterReport(hotelId, filter);
+    return toCsv(report.rows, [
+      { header: 'Booking ID', value: (x) => x.bookingId },
+      { header: 'Room No.(s)', value: (x) => x.roomNumber },
+      { header: 'Room Type', value: (x) => x.roomType },
+      { header: 'Booking Date', value: (x) => x.bookingDate },
+      { header: 'Check-In', value: (x) => x.checkInDate },
+      { header: 'Check-Out', value: (x) => x.checkOutDate },
+      { header: 'Nights', value: (x) => x.nights },
+      { header: 'Source', value: (x) => x.source },
+      { header: 'Booking Status', value: (x) => x.status },
+      { header: 'Guest', value: (x) => x.guest },
+      { header: 'Phone', value: (x) => x.guestPhone },
+      { header: 'Email', value: (x) => x.guestEmail },
+      { header: 'Adults', value: (x) => x.adults },
+      { header: 'Children', value: (x) => x.children },
+      { header: 'No. of Rooms', value: (x) => x.roomsCount },
+      { header: 'Rate Plan', value: (x) => x.ratePlan },
+      { header: 'Total Amount', value: (x) => x.totalCharges },
+      { header: 'Paid Amount', value: (x) => x.totalPaid },
+      { header: 'Balance Due', value: (x) => x.balance },
+      { header: 'Currency', value: (x) => x.currency },
+      { header: 'Payment Method', value: (x) => x.paymentMethod },
+      { header: 'Payment Status', value: (x) => x.paymentStatus },
+    ]);
+  }
+
   // ---- Cash reconciliation ----
   async cashReconciliation(hotelId: string, range: Range) {
     const shifts = await this.prisma.cashDrawerShift.findMany({

@@ -12,7 +12,7 @@ function range(q: Record<string, string>) {
 }
 
 /** Report center for auditors / finance (plan.md §13). OWNER, MANAGER, ACCOUNTANT. */
-@Roles(Role.OWNER, Role.MANAGER, Role.ACCOUNTANT)
+@Roles(Role.OWNER, Role.MANAGER, Role.ACCOUNTANT, Role.FRONT_DESK)
 @Controller('reports')
 export class ReportsController {
   constructor(private readonly reports: ReportsService) {}
@@ -21,12 +21,39 @@ export class ReportsController {
   center() {
     return {
       reports: [
+        { key: 'master', formats: ['json', 'csv'] },
         { key: 'cash-reconciliation', formats: ['json', 'csv', 'pdf'] },
         { key: 'revenue', formats: ['json', 'csv', 'pdf'] },
         { key: 'inventory-loss', formats: ['json', 'csv'] },
         { key: 'maintenance', path: '/maintenance/report', formats: ['json', 'csv', 'pdf'] },
       ],
     };
+  }
+
+  // ---- Master Report (Stayflexi Parity) ----
+  @Get('master')
+  master(@CurrentUser() u: AuthUser, @Query() q: Record<string, string>) {
+    return this.reports.masterReport(u.hotelId, {
+      from: q.from ? new Date(q.from) : undefined,
+      to: q.to ? new Date(q.to) : undefined,
+      dateType: q.dateType,
+      status: q.status,
+      source: q.source,
+      search: q.search,
+    });
+  }
+
+  @Get('master/export.csv')
+  async masterCsv(@CurrentUser() u: AuthUser, @Query() q: Record<string, string>, @Res() res: Response) {
+    const csv = await this.reports.masterReportCsv(u.hotelId, {
+      from: q.from ? new Date(q.from) : undefined,
+      to: q.to ? new Date(q.to) : undefined,
+      dateType: q.dateType,
+      status: q.status,
+      source: q.source,
+      search: q.search,
+    });
+    res.header('Content-Type', 'text/csv').header('Content-Disposition', 'attachment; filename="master-report.csv"').send(csv);
   }
 
   // ---- Cash reconciliation ----

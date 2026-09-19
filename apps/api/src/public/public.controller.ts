@@ -19,6 +19,7 @@ import { MenuService } from '../restaurant/menu.service';
 import { PaymentsGatewayService } from '../payments/payments-gateway.service';
 import { systemActor } from '../common/actor';
 import { AppConfig } from '../config/configuration';
+import { SmartLocksService } from '../smart-locks/smart-locks.service';
 
 const bookSchema = z
   .object({
@@ -52,6 +53,7 @@ export class PublicController {
     private readonly menu: MenuService,
     private readonly gateway: PaymentsGatewayService,
     private readonly config: ConfigService<AppConfig, true>,
+    private readonly smartLocks: SmartLocksService,
   ) {}
 
   private async resolveHotel(hotelId?: string) {
@@ -413,4 +415,200 @@ export class PublicController {
       checkOut: r.checkOutDate.toISOString().slice(0, 10),
     };
   }
+
+  /** Contactless MagicLink: get available upsells (early check-in, room upgrades, add-ons). */
+  @Get('stay/upsells')
+  async stayUpsells(
+    @Query('reservationId') reservationId: string,
+    @Query('phone') phone: string,
+  ) {
+    const reservation = await this.prisma.reservation.findUnique({
+      where: { id: reservationId },
+      include: { guest: true, room: true, roomType: true },
+    });
+    if (!reservation || reservation.guest.phone !== phone) {
+      throw new NotFoundException('Reservation not found or phone mismatch');
+    }
+
+    // Check if room is cleaned & ready for early check-in
+    const roomReady = reservation.room ? reservation.room.status === 'AVAILABLE' : false;
+    const earlyCheckinFee = Math.round(reservation.quotedPrice * 0.3); // 30% of base rate
+
+    // Fetch potential upgrade room types
+    const upgrades = await this.prisma.roomType.findMany({
+      where: {
+        hotelId: reservation.hotelId,
+        id: { not: reservation.roomTypeId },
+        basePrice: { gt: reservation.roomType.basePrice },
+      },
+      select: { id: true, name: true, basePrice: true, capacity: true, description: true },
+    });
+
+    const standardAddons = [
+      { id: 'addon-airport', title: 'Airport VIP Transfer', price: 1500000, description: 'Chauffeured pickup with luggage assistance' },
+      { id: 'addon-breakfast', title: 'Full Daily Breakfast Pass', price: 850000, description: 'Continental and hot buffet breakfast for your stay' },
+      { id: 'addon-late-checkout', title: 'Late Check-Out (up to 4:00 PM)', price: 1000000, description: 'Relax longer without rushing on departure day' },
+      { id: 'addon-welcome-fruit', title: 'Artisan Fruit & Wine Basket', price: 1200000, description: 'Fresh seasonal fruits and premium chilled beverage' },
+    ];
+
+    return {
+      reservationId: reservation.id,
+      earlyCheckin: {
+        available: roomReady,
+        fee: earlyCheckinFee,
+        roomStatus: reservation.room?.status ?? 'UNASSIGNED',
+        roomNumber: reservation.room?.roomNumber ?? null,
+      },
+      upgrades: upgrades.map((u) => ({
+        roomTypeId: u.id,
+        name: u.name,
+        priceDelta: Math.max(0, u.basePrice - reservation.roomType.basePrice),
+        capacity: u.capacity,
+        description: u.description,
+      })),
+      addons: standardAddons,
+    };
+  }
+
+  /** Contactless MagicLink: submit digital registration card & canvas signature. */
+  @Post('stay/self-checkin')
+  async selfCheckIn(
+    @Body()
+    body: {
+      reservationId: string;
+      phone: string;
+      signatureDataUri?: string;
+      idType?: string;
+      idNumber?: string;
+      agreedToRules: boolean;
+      eta?: string;
+    },
+  ) {
+    const reservation = await this.prisma.reservation.findUnique({
+      where: { id: body.reservationId },
+      include: { guest: true, room: true },
+    });
+    if (!reservation || reservation.guest.phone !== body.phone) {
+      throw new NotFoundException('Reservation not found or phone mismatch');
+    }
+    if (!body.agreedToRules) {
+      throw new BadRequestException('You must agree to the house rules to complete self check-in');
+    }
+
+    if (body.idType || body.idNumber) {
+      await this.prisma.guest.update({
+        where: { id: reservation.guestId },
+        data: {
+          idType: body.idType ?? reservation.guest.idType,
+          idNumber: body.idNumber ?? reservation.guest.idNumber,
+        },
+      });
+    }
+
+    const note = `[Digital Pre-Checkin] Signature captured. ETA: ${body.eta || 'Standard'}.`;
+    await this.prisma.reservation.update({
+      where: { id: reservation.id },
+      data: {
+        specialRequests: reservation.specialRequests ? `${reservation.specialRequests} | ${note}` : note,
+      },
+    });
+
+    await this.prisma.notification.create({
+      data: {
+        hotelId: reservation.hotelId,
+        role: Role.FRONT_DESK,
+        type: 'guest.self_checkin',
+        title: `Self Check-In: ${reservation.guest.name}`,
+        body: `Digital registration completed for ${reservation.room?.roomNumber ? `Room ${reservation.room.roomNumber}` : 'Stay'} · ETA: ${body.eta || 'Standard'}`,
+        entityRef: reservation.id,
+      },
+    });
+
+    return {
+      ok: true,
+      message: 'Digital self check-in completed! Your key will be ready upon arrival.',
+    };
+  }
+
+  /** Contactless MagicLink: purchase an early check-in, upgrade, or add-on package. */
+  @Post('stay/purchase-upsell')
+  async purchaseUpsell(
+    @Body()
+    body: {
+      reservationId: string;
+      phone: string;
+      title: string;
+      amountMinor: number;
+      type: 'EARLY_CHECKIN' | 'UPGRADE' | 'ADDON';
+      upgradeRoomTypeId?: string;
+    },
+  ) {
+    const reservation = await this.prisma.reservation.findUnique({
+      where: { id: body.reservationId },
+      include: { guest: true, room: true, folio: true },
+    });
+    if (!reservation || reservation.guest.phone !== body.phone) {
+      throw new NotFoundException('Reservation not found or phone mismatch');
+    }
+    if (!reservation.folio) {
+      throw new BadRequestException('No active folio for this reservation');
+    }
+
+    // Post to folio
+    await this.prisma.folioLineItem.create({
+      data: {
+        folioId: reservation.folio.id,
+        type: LineType.SERVICE,
+        description: `MagicLink Upsell: ${body.title}`,
+        amount: body.amountMinor,
+        quantity: 1,
+        by: 'MagicLink Guest Portal',
+      },
+    });
+
+    await this.prisma.folio.update({
+      where: { id: reservation.folio.id },
+      data: {
+        totalCharges: { increment: body.amountMinor },
+        balance: { increment: body.amountMinor },
+      },
+    });
+
+    // If upgrading room type, update reservation roomTypeId
+    if (body.type === 'UPGRADE' && body.upgradeRoomTypeId) {
+      await this.prisma.reservation.update({
+        where: { id: reservation.id },
+        data: { roomTypeId: body.upgradeRoomTypeId },
+      });
+    }
+
+    await this.prisma.notification.create({
+      data: {
+        hotelId: reservation.hotelId,
+        role: Role.FRONT_DESK,
+        type: 'upsell.purchased',
+        title: `Upsell Purchased: ${body.title}`,
+        body: `${reservation.guest.name} added ${body.title} — ${(body.amountMinor / 100).toLocaleString()}`,
+        entityRef: reservation.id,
+      },
+    });
+
+    return {
+      ok: true,
+      message: `Successfully added ${body.title} to your stay folio!`,
+    };
+  }
+
+  @Get('stay/digital-key')
+  async getDigitalKey(@Query('ref') reservationId: string) {
+    if (!reservationId) throw new BadRequestException('Reservation reference required');
+    const res = await this.prisma.reservation.findUnique({
+      where: { id: reservationId },
+      select: { hotelId: true },
+    });
+    if (!res) throw new NotFoundException('Reservation not found');
+    return this.smartLocks.generateRoomKey(res.hotelId, reservationId);
+  }
 }
+
+

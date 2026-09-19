@@ -64,6 +64,46 @@ export class RatesService {
     }));
   }
 
+  /** Full rates & restrictions matrix across all room types and dates. */
+  async getMatrix(hotelId: string, from: Date, to: Date) {
+    const roomTypes = await this.prisma.roomType.findMany({
+      where: { hotelId },
+      orderBy: { name: 'asc' },
+    });
+    const rows = await this.prisma.dailyRate.findMany({
+      where: { hotelId, date: { gte: from, lte: to } },
+    });
+    const map = new Map<string, (typeof rows)[0]>();
+    for (const r of rows) {
+      map.set(`${r.roomTypeId}:${r.date.toISOString().slice(0, 10)}`, r);
+    }
+
+    const dates: string[] = [];
+    for (let t = from.getTime(); t <= to.getTime(); t += DAY) {
+      dates.push(new Date(t).toISOString().slice(0, 10));
+    }
+
+    return {
+      dates,
+      roomTypes: roomTypes.map((rt) => ({
+        id: rt.id,
+        name: rt.name,
+        basePrice: rt.basePrice,
+        days: dates.map((d) => {
+          const row = map.get(`${rt.id}:${d}`);
+          return {
+            date: d,
+            price: row?.price ?? rt.basePrice,
+            minStay: row?.minStay ?? 1,
+            maxStay: row?.maxStay ?? null,
+            closedToArrival: row?.closedToArrival ?? false,
+            stopSell: row?.stopSell ?? false,
+          };
+        }),
+      })),
+    };
+  }
+
   /**
    * Bulk-set the rate/restriction for each day in [from, to] for a room type.
    * Upserts one DailyRate per day.

@@ -47,6 +47,59 @@ export class ReservationsController {
     return this.reservations.quote(user.hotelId, dto);
   }
 
+  /**
+   * Chain CRS - List Sister Properties in the Network
+   */
+  @Get('chain/properties')
+  chainProperties(@CurrentUser() user: AuthUser) {
+    return this.reservations.getChainProperties(user.hotelId);
+  }
+
+  /**
+   * Chain CRS - Cross-Property Live Availability & Rates Search
+   */
+  @Post('chain/availability')
+  chainAvailability(
+    @CurrentUser() user: AuthUser,
+    @Body() body: { checkIn: string; checkOut: string; adults?: number },
+  ) {
+    return this.reservations.checkChainAvailability({
+      currentHotelId: user.hotelId,
+      checkIn: new Date(body.checkIn),
+      checkOut: new Date(body.checkOut),
+      adults: body.adults,
+    });
+  }
+
+  /**
+   * Chain CRS - Book Directly into Sister Property
+   */
+  @Roles(Role.MANAGER, Role.FRONT_DESK)
+  @Post('chain/book')
+  bookSisterProperty(
+    @CurrentActor() actor: Actor,
+    @Body()
+    body: {
+      targetHotelId: string;
+      roomTypeId: string;
+      checkIn: string;
+      checkOut: string;
+      guest: { name: string; phone: string; email?: string };
+      adults?: number;
+      specialRequests?: string;
+    },
+  ) {
+    return this.reservations.bookSisterProperty(actor, {
+      targetHotelId: body.targetHotelId,
+      roomTypeId: body.roomTypeId,
+      checkIn: new Date(body.checkIn),
+      checkOut: new Date(body.checkOut),
+      guest: body.guest,
+      adults: body.adults,
+      specialRequests: body.specialRequests,
+    });
+  }
+
   @Roles(Role.MANAGER, Role.FRONT_DESK)
   @Post()
   create(
@@ -65,8 +118,10 @@ export class ReservationsController {
   list(
     @CurrentUser() user: AuthUser,
     @Query('status') status?: ReservationStatus,
+    @Query('scope') scope?: string,
+    @Query('search') search?: string,
   ) {
-    return this.reservations.list(user.hotelId, status);
+    return this.reservations.list(user.hotelId, { status, scope, search });
   }
 
   @Get('rack')
