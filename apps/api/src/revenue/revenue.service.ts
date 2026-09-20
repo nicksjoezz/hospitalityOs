@@ -142,6 +142,175 @@ export class RevenueService {
   }
 
   /**
+   * Detailed historical / past revenue breakdown.
+   * Day-by-day revenue ledger, room vs F&B vs other, ADR, RevPAR, and source channels.
+   */
+  async pastRevenue(hotelId: string, from: Date, to: Date) {
+    if (to <= from) throw new BadRequestException('`to` must be after `from`');
+    const hotel = await this.prisma.hotel.findUniqueOrThrow({
+      where: { id: hotelId },
+      select: { currency: true },
+    });
+
+    const totalRooms = await this.prisma.room.count({
+      where: { hotelId, deletedAt: null },
+    });
+
+    const reservations = await this.prisma.reservation.findMany({
+      where: {
+        hotelId,
+        status: { in: COUNTED_STATUSES as never },
+        checkInDate: { lt: to },
+        checkOutDate: { gt: from },
+      },
+      include: {
+        folio: {
+          include: {
+            lineItems: true,
+          },
+        },
+      },
+    });
+
+    const numDays = Math.max(1, nightsBetween(from, to));
+    const daily: Array<{
+      date: string;
+      roomsSold: number;
+      occupancyPct: number;
+      roomRevenue: number;
+      fbRevenue: number;
+      otherRevenue: number;
+      totalRevenue: number;
+      adr: number;
+      revpar: number;
+      variancePct: number;
+    }> = [];
+
+    let totalSoldRoomNights = 0;
+    let totalRoomRevenue = 0;
+    let totalFbRevenue = 0;
+    let totalOtherRevenue = 0;
+
+    const sourceMap = new Map<string, { bookings: number; roomNights: number; revenue: number }>();
+
+    for (const r of reservations) {
+      const src = r.source || 'WALK_IN';
+      const entry = sourceMap.get(src) || { bookings: 0, roomNights: 0, revenue: 0 };
+      entry.bookings += 1;
+
+      const stayNights = Math.max(1, nightsBetween(r.checkInDate, r.checkOutDate));
+      const overlapStart = r.checkInDate > from ? r.checkInDate : from;
+      const overlapEnd = r.checkOutDate < to ? r.checkOutDate : to;
+      const overlapNights = Math.max(0, nightsBetween(overlapStart, overlapEnd));
+      entry.roomNights += overlapNights;
+      const perNight = r.quotedPrice / stayNights;
+      entry.revenue += Math.round(perNight * overlapNights);
+      sourceMap.set(src, entry);
+    }
+
+    let prevDayTotal = 0;
+    for (let i = 0; i < numDays; i++) {
+      const dayStart = new Date(from.getTime() + i * DAY_MS);
+      const dayEnd = new Date(dayStart.getTime() + DAY_MS);
+      const dateStr = dayStart.toISOString().slice(0, 10);
+
+      let dayRoomsSold = 0;
+      let dayRoomRev = 0;
+      let dayFbRev = 0;
+      let dayOtherRev = 0;
+
+      for (const r of reservations) {
+        if (r.checkInDate < dayEnd && r.checkOutDate > dayStart) {
+          dayRoomsSold += 1;
+          const stayNights = Math.max(1, nightsBetween(r.checkInDate, r.checkOutDate));
+          dayRoomRev += Math.round(r.quotedPrice / stayNights);
+
+          if (r.folio?.lineItems) {
+            for (const item of r.folio.lineItems) {
+              if (item.at >= dayStart && item.at < dayEnd) {
+                if (item.type === 'FNB' || item.type === 'BAR') {
+                  dayFbRev += item.amount;
+                } else if (item.type !== 'ROOM') {
+                  dayOtherRev += item.amount;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      const dayTotal = dayRoomRev + dayFbRev + dayOtherRev;
+      const occPct = totalRooms > 0 ? Math.round((dayRoomsSold / totalRooms) * 1000) / 10 : 0;
+      const adr = dayRoomsSold > 0 ? Math.round(dayRoomRev / dayRoomsSold) : 0;
+      const revpar = totalRooms > 0 ? Math.round(dayRoomRev / totalRooms) : 0;
+      const variance = prevDayTotal > 0 ? Math.round(((dayTotal - prevDayTotal) / prevDayTotal) * 1000) / 10 : 0;
+      prevDayTotal = dayTotal;
+
+      totalSoldRoomNights += dayRoomsSold;
+      totalRoomRevenue += dayRoomRev;
+      totalFbRevenue += dayFbRev;
+      totalOtherRevenue += dayOtherRev;
+
+      daily.push({
+        date: dateStr,
+        roomsSold: dayRoomsSold,
+        occupancyPct: occPct,
+        roomRevenue: dayRoomRev,
+        fbRevenue: dayFbRev,
+        otherRevenue: dayOtherRev,
+        totalRevenue: dayTotal,
+        adr,
+        revpar,
+        variancePct: variance,
+      });
+    }
+
+    const availableRoomNights = totalRooms * numDays;
+    const overallOccupancyPct = availableRoomNights > 0 ? Math.round((totalSoldRoomNights / availableRoomNights) * 1000) / 10 : 0;
+    const overallAdr = totalSoldRoomNights > 0 ? Math.round(totalRoomRevenue / totalSoldRoomNights) : 0;
+    const overallRevpar = availableRoomNights > 0 ? Math.round(totalRoomRevenue / availableRoomNights) : 0;
+    const totalRevenue = totalRoomRevenue + totalFbRevenue + totalOtherRevenue;
+
+    const sources = Array.from(sourceMap.entries()).map(([source, val]) => ({
+      source,
+      bookings: val.bookings,
+      roomNights: val.roomNights,
+      revenue: val.revenue,
+      sharePct: totalRoomRevenue > 0 ? Math.round((val.revenue / totalRoomRevenue) * 1000) / 10 : 0,
+    }));
+
+    return {
+      currency: hotel.currency,
+      range: { from: from.toISOString(), to: to.toISOString(), days: numDays },
+      summary: {
+        totalRevenue,
+        roomRevenue: totalRoomRevenue,
+        fbRevenue: totalFbRevenue,
+        otherRevenue: totalOtherRevenue,
+        totalRooms,
+        availableRoomNights,
+        soldRoomNights: totalSoldRoomNights,
+        occupancyPct: overallOccupancyPct,
+        adr: overallAdr,
+        revpar: overallRevpar,
+      },
+      bySource: sources,
+      daily,
+    };
+  }
+
+  async pastRevenueCsv(hotelId: string, from: Date, to: Date): Promise<string> {
+    const report = await this.pastRevenue(hotelId, from, to);
+    const lines = [
+      'Date,Rooms Sold,Occupancy %,Room Revenue,F&B Revenue,Other Revenue,Total Revenue,ADR,RevPAR,Variance %',
+    ];
+    for (const d of report.daily) {
+      lines.push(`${d.date},${d.roomsSold},${d.occupancyPct}%,${d.roomRevenue},${d.fbRevenue},${d.otherRevenue},${d.totalRevenue},${d.adr},${d.revpar},${d.variancePct}%`);
+    }
+    return lines.join('\n');
+  }
+
+  /**
    * Generate deterministic price suggestions for the next `horizonDays` per room
    * type, driven by projected occupancy, day-of-week and a simple seasonality
    * nudge. Replaces any still-pending (SUGGESTED) rows.

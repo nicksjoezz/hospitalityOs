@@ -51,6 +51,7 @@ import { ChannelManagerModule } from './channel-manager/channel-manager.module';
 import { AuditModule } from './audit/audit.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { SyncModule } from './sync/sync.module';
+import { SmartLocksModule } from './smart-locks/smart-locks.module';
 import { AppController } from './app.controller';
 
 @Module({
@@ -117,6 +118,7 @@ import { AppController } from './app.controller';
     AuditModule,
     NotificationsModule,
     SyncModule,
+    SmartLocksModule,
     PlatformModule,
   ],
   controllers: [AppController],

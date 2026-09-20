@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Res } from '@nestjs/common';
+import type { Response } from 'express';
 import { z } from 'zod';
 import { Feature, SuggestionStatus, Role } from '@hospitalityos/shared';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
@@ -30,6 +31,30 @@ export class RevenueController {
     const f = from ? new Date(from) : new Date(Date.now() - 30 * 86_400_000);
     const t = to ? new Date(to) : new Date();
     return this.revenue.analytics(user.hotelId, f, t);
+  }
+
+  @Get('past')
+  past(
+    @CurrentUser() user: AuthUser,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    const f = from ? new Date(from) : new Date(Date.now() - 30 * 86_400_000);
+    const t = to ? new Date(to) : new Date();
+    return this.revenue.pastRevenue(user.hotelId, f, t);
+  }
+
+  @Get('past/export.csv')
+  async pastCsv(
+    @CurrentUser() user: AuthUser,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+    @Res() res?: Response,
+  ) {
+    const f = from ? new Date(from) : new Date(Date.now() - 30 * 86_400_000);
+    const t = to ? new Date(to) : new Date();
+    const csv = await this.revenue.pastRevenueCsv(user.hotelId, f, t);
+    res?.header('Content-Type', 'text/csv').header('Content-Disposition', 'attachment; filename="past-revenue.csv"').send(csv);
   }
 
   @Get('forecast')
